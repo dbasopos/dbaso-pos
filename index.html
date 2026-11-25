@@ -250,7 +250,7 @@
 
 <script>
 'use strict';
-const VERSI_APP = '1.0.3 (25 Nov 2026)';
+const VERSI_APP = '1.1 (25 Nov 2026)';
 // =====================================================================
 // PENYIMPANAN DI TABLET (IndexedDB, kunci -> nilai)
 // =====================================================================
@@ -1089,16 +1089,19 @@ async function dialogTutup() {
       (r.batal.length ? ' <b style="color:var(--merah);">' + r.batal.length + ' transaksi dibatalkan admin (' + rp(r.batal.reduce((a, t) => a + t.total, 0)) + ') tidak dihitung.</b>' : '') + '</div>' +
     '<label class="lbl" for="inSetor">Uang tunai dihitung (setoran)</label><input id="inSetor" inputmode="numeric" class="angkaBesar">' +
     '<div class="angkaBesar" id="selisih" style="font-size:18px; margin-top:8px;"></div>' +
+    htmlHitungStok() +
     '<label class="lbl" for="inCatTutup">Catatan (opsional)</label><input id="inCatTutup" maxlength="200"><div class="err" id="ttpErr"></div>',
     [{ t: 'Batal', c: 'ghost', f: tutupModal }, { t: 'Tutup kasir', c: 'merah', id: 'btnTutupKasir', f: async () => {
       if ($('inSetor').value === '') { $('ttpErr').textContent = 'Isi uang tunai yang dihitung.'; return; }
+      const stok = bacaHitungStok();
+      if (stok === null) { $('ttpErr').textContent = 'Isi stok fisik SEMUA barang (isi 0 kalau habis).'; return; }
       sibuk(true, 'Mengirim data & menutup kasir...');
       await sinkron(true);
       if (belumTerkirim()) { sibuk(false);
         $('ttpErr').textContent = 'Masih ada ' + belumTerkirim() + ' data belum terkirim (' + (S.gagalSync || 'cek internet') + '). Tutup kasir harus menunggu semua terkirim supaya rekap di Hub cocok.'; return; }
       const r2 = rekapShift(), setor = nilaiRupiah($('inSetor'));
       S.antrian.shift.push({ id: S.shift.id, idKasir: S.shift.idKasir, buka: S.shift.buka, modal: S.shift.modal, tutup: waktu(), tunai: r2.tunai, nonTunai: r2.nonTunai,
-        kasKeluar: r2.kas, setoran: setor, jumlahTrx: r2.trx.length, catatan: $('inCatTutup').value.trim() + (S.kasir.id !== S.shift.idKasir ? ' [ditutup ' + S.kasir.nama + ']' : '') });
+        kasKeluar: r2.kas, setoran: setor, jumlahTrx: r2.trx.length, stok: stok, catatan: $('inCatTutup').value.trim() + (S.kasir.id !== S.shift.idKasir ? ' [ditutup ' + S.kasir.nama + ']' : '') });
       await simpanKe('antrian');
       await sinkron(true);
       const sel = setor - r2.seharusnya;
@@ -1109,11 +1112,29 @@ async function dialogTutup() {
         [{ t: 'Selesai', f: () => { tutupModal(); bukaPin('Kasir sudah ditutup.'); } }], () => bukaPin('Kasir sudah ditutup.'));
     } }]);
   pasangRupiah($('inSetor'));
+  document.querySelectorAll('.inFisik').forEach(x => x.addEventListener('input', () => { x.value = x.value.replace(/[^\d.,]/g, ''); x.style.borderColor = ''; }));
   $('inSetor').addEventListener('input', () => {
     const v = nilaiRupiah($('inSetor')), s = v - r.seharusnya, el = $('selisih');
     el.textContent = $('inSetor').value === '' ? '' : s === 0 ? '✓ Pas' : (s > 0 ? 'Lebih ' : 'Kurang ') + rp(Math.abs(s));
     el.style.color = s === 0 ? 'var(--hijau)' : 'var(--merah)';
   });
+}
+// ---------- hitung stok fisik saat tutup kasir (barang dipilih admin di Hub) ----------
+function htmlHitungStok() {
+  const l = M().hitungTutup || [];
+  if (!l.length) return '';
+  return '<div style="margin-top:16px; font-weight:700;">Hitung stok fisik</div><div class="hint">Hitung sisa barang di cabang, isi semua (0 kalau habis). Stok sistem disesuaikan ke angka ini.</div>' +
+    '<table class="tbl" style="margin-top:6px;">' + l.map(b => '<tr><td>' + esc(b.nama) + '<div class="hint">' + esc(b.satuan) + '</div></td>' +
+      '<td style="width:120px;"><input class="inFisik" data-k="' + esc(b.kode) + '" inputmode="decimal" placeholder="0" style="text-align:right;"></td></tr>').join('') + '</table>';
+}
+function bacaHitungStok() {   // null = ada yang belum diisi
+  const out = []; let kosong = false;
+  document.querySelectorAll('.inFisik').forEach(x => {
+    const v = x.value.trim().replace(',', '.');
+    if (v === '' || !(Number(v) >= 0)) { kosong = true; x.style.borderColor = 'var(--merah)'; return; }
+    out.push({ kode: x.dataset.k, fisik: Number(v) });
+  });
+  return kosong ? null : out;
 }
 // ---------- atur tampilan (per cabang, disimpan ke server) ----------
 function dialogTampilan() {
