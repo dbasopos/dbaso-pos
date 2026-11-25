@@ -233,11 +233,10 @@
       <button id="mSync">⟳ SYNC DATA</button>
     </div>
     <button class="itm" data-m="baru">🧾 Transaksi Baru</button>
-    <button class="itm" data-m="simpanan">🗂 Keranjang Tersimpan</button>
     <button class="itm" data-m="riwayat">📜 Riwayat Transaksi</button>
     <button class="itm" data-m="kas">💸 Kas Keluar<small>Beli barang di cabang / biaya lain</small></button>
     <button class="itm" data-m="tutup">🔒 Rekap Kas &amp; Tutup Kasir</button>
-    <button class="itm" data-m="tampilan">🎨 Atur Tampilan<small>Urutan kategori, sembunyikan produk</small></button>
+    <button class="itm" data-m="tampilan">🎨 Atur Tampilan<small>Urutan kategori, urutan produk, sembunyikan produk</small></button>
     <button class="itm" data-m="printer" disabled>🖨 Pengaturan Printer<small>Menyusul (tahap 4)</small></button>
     <button class="itm" data-m="ganti">👤 Ganti Kasir</button>
     <button class="itm" data-m="keluar" style="color:var(--merah);">⏏ Keluar Perangkat</button>
@@ -251,7 +250,7 @@
 
 <script>
 'use strict';
-const VERSI_APP = '1.0.1 (25 Nov 2026)';
+const VERSI_APP = '1.0.2 (25 Nov 2026)';
 // =====================================================================
 // PENYIMPANAN DI TABLET (IndexedDB, kunci -> nilai)
 // =====================================================================
@@ -553,6 +552,10 @@ function gambarSync() {
   el.className = S.gagalSync && n ? 'gagal' : n ? 'belum' : '';
   el.textContent = S.sedangSync ? '⟳ Sync...' : (n ? n + ' belum terkirim' : '✓ Terkirim semua') + (S.syncJam ? ' · sync ' + S.syncJam.slice(11, 16) : '');
 }
+function urutProduk(p, td) { const u = ((td.produk || {})[p.kategori] || []).indexOf(p.kode); return u < 0 ? 9999 : u; }
+function produkKategoriUrut(kat, td) {   // produk tampil di 1 kategori, sesuai urutan tersimpan
+  return M().produk.filter(p => p.tampil && p.kategori === kat).sort((a, b) => urutProduk(a, td) - urutProduk(b, td) || a.nama.localeCompare(b.nama));
+}
 function tampilanData() { return (M().tampilan && M().tampilan.data) || {}; }
 function kategoriUrut() {
   const urut = tampilanData().kategori || [];
@@ -561,9 +564,9 @@ function kategoriUrut() {
 }
 function gambarKategori() {
   const kat = kategoriUrut();
-  if (!S.katAktif || (S.katAktif !== '*' && !kat.some(k => k.kode === S.katAktif))) S.katAktif = kat.length ? kat[0].kode : '*';
-  $('kat').innerHTML = kat.map(k => '<button data-k="' + esc(k.kode) + '" class="' + (S.katAktif === k.kode ? 'on' : '') + '">' + esc(k.nama) + '</button>').join('') +
-    '<button data-k="*" class="' + (S.katAktif === '*' ? 'on' : '') + '">Semua</button>';
+  if (!S.katAktif || (S.katAktif !== '*' && !kat.some(k => k.kode === S.katAktif))) S.katAktif = '*';
+  $('kat').innerHTML = '<button data-k="*" class="' + (S.katAktif === '*' ? 'on' : '') + '">Semua</button>' +
+    kat.map(k => '<button data-k="' + esc(k.kode) + '" class="' + (S.katAktif === k.kode ? 'on' : '') + '">' + esc(k.nama) + '</button>').join('');
 }
 $('kat').onclick = e => { const b = e.target.closest('button'); if (!b) return; S.katAktif = b.dataset.k; $('inCari').value = ''; gambarKategori(); gambarGrid(); };
 $('inCari').addEventListener('input', gambarGrid);
@@ -576,9 +579,8 @@ function gambarGrid() {
   let list = M().produk.filter(p => p.tampil && sembunyi.indexOf(p.kode) < 0);
   if (q) list = list.filter(p => p.nama.toLowerCase().indexOf(q) > -1);
   else if (S.katAktif !== '*') list = list.filter(p => p.kategori === S.katAktif);
-  const urut = (td.produk || {})[S.katAktif] || [];
-  const pos = {}; urut.forEach((k, i) => { pos[k] = i; });
-  list.sort((a, b) => (pos[a.kode] ?? 999) - (pos[b.kode] ?? 999) || a.nama.localeCompare(b.nama));
+  const posKat = {}; kategoriUrut().forEach((k, i) => { posKat[k.kode] = i; });
+  list.sort((a, b) => (S.katAktif === '*' && !q ? (posKat[a.kategori] ?? 999) - (posKat[b.kategori] ?? 999) : 0) || urutProduk(a, td) - urutProduk(b, td) || a.nama.localeCompare(b.nama));
   if (!M().produk.length) { $('grid').innerHTML = '<div class="kosongInfo">Belum ada data produk. Tekan status sync di atas.</div>'; return; }
   if (!list.length) { $('grid').innerHTML = '<div class="kosongInfo">Tidak ada produk.</div>'; return; }
   $('grid').innerHTML = list.map(p => {
@@ -1062,6 +1064,14 @@ function rekapShift() {
 }
 async function dialogTutup() {
   if (!S.shift) { tumpuk('Kasir belum dibuka.'); return; }
+  if (S.kr.item.length || S.simpanan.length) {
+    modal('Belum bisa tutup kasir', '<div style="white-space:pre-line;">Masih ada transaksi yang belum selesai:\n' +
+      (S.kr.item.length ? '• Keranjang yang sedang diisi (' + S.kr.item.reduce((a, x) => a + x.jumlah, 0) + ' item)\n' : '') +
+      (S.simpanan.length ? '• ' + S.simpanan.length + ' keranjang tersimpan: ' + esc(S.simpanan.map(x => x.label).join(', ')) + '\n' : '') +
+      '\nSelesaikan pembayarannya, atau hapus kalau batal, lalu tutup kasir lagi.</div>',
+      [{ t: 'Tutup', c: 'ghost', f: tutupModal }].concat(S.simpanan.length ? [{ t: 'Buka keranjang tersimpan', f: () => { tutupModal(); dialogSimpanan(); } }] : []));
+    return;
+  }
   const r = rekapShift();
   modal('Rekap kas & tutup kasir', '<table class="tbl"><tr><td>Dibuka</td><td class="r">' + esc(S.shift.buka.slice(0, 16)) + ' (' + esc(S.shift.namaKasir) + ')</td></tr>' +
     '<tr><td>Modal awal</td><td class="r">' + rp(S.shift.modal) + '</td></tr>' +
@@ -1100,16 +1110,35 @@ async function dialogTutup() {
 // ---------- atur tampilan (per cabang, disimpan ke server) ----------
 function dialogTampilan() {
   const td = JSON.parse(JSON.stringify(tampilanData()));
-  td.kategori = kategoriUrut().map(k => k.kode); td.sembunyi = td.sembunyi || [];
+  td.kategori = kategoriUrut().map(k => k.kode); td.sembunyi = td.sembunyi || []; td.produk = td.produk || {};
+  M().kategori.forEach(k => { td.produk[k.kode] = produkKategoriUrut(k.kode, td).map(p => p.kode); });
+  let bagian = '#kat';   // '#kat' = urutan kategori, selain itu kode kategori
+  const tombolGeser = (i, n, attr) => '<span class="step">' +
+    '<button ' + attr + '="' + i + '" data-d="atas"' + (i ? '' : ' disabled') + ' aria-label="Paling atas">⤒</button>' +
+    '<button ' + attr + '="' + i + '" data-d="-1"' + (i ? '' : ' disabled') + ' aria-label="Naik">↑</button>' +
+    '<button ' + attr + '="' + i + '" data-d="1"' + (i < n - 1 ? '' : ' disabled') + ' aria-label="Turun">↓</button>' +
+    '<button ' + attr + '="' + i + '" data-d="bawah"' + (i < n - 1 ? '' : ' disabled') + ' aria-label="Paling bawah">⤓</button></span>';
   const gambar = () => {
-    $('mIsi').innerHTML = '<div class="jd" style="font-weight:700;">Urutan kategori</div>' + td.kategori.map((k, i) => {
-      const kat = M().kategori.find(x => x.kode === k); if (!kat) return '';
-      return '<div class="opRow"><span class="nm">' + esc(kat.nama) + '</span><span class="step"><button data-u="' + i + '" data-d="-1"' + (i ? '' : ' disabled') + '>↑</button>' +
-        '<button data-u="' + i + '" data-d="1"' + (i < td.kategori.length - 1 ? '' : ' disabled') + '>↓</button></span></div>';
-    }).join('') +
-    '<div class="jd" style="font-weight:700; margin-top:14px;">Tampil di kasir</div><div class="hint">Matikan produk yang tidak dijual di cabang ini.</div>' +
-    M().produk.filter(p => p.tampil).map(p => '<label class="opRow"><span class="nm">' + esc(p.nama) + '</span><input type="checkbox" data-s="' + esc(p.kode) + '" style="width:24px; min-height:24px;"' +
-      (td.sembunyi.indexOf(p.kode) < 0 ? ' checked' : '') + '></label>').join('') + '<div class="err" id="tpErr"></div>';
+    let html = '<label class="lbl" for="tpBagian" style="margin-top:0;">Yang diatur</label><select id="tpBagian"><option value="#kat">Urutan kategori (kolom kiri)</option>' +
+      td.kategori.map(k => { const kat = M().kategori.find(x => x.kode === k); return kat ? '<option value="' + esc(k) + '"' + (bagian === k ? ' selected' : '') + '>Isi kategori: ' + esc(kat.nama) + ' (' + td.produk[k].length + ')</option>' : ''; }).join('') + '</select>';
+    if (bagian === '#kat') {
+      html += '<div class="hint" style="margin:8px 0;">"Semua" selalu paling atas.</div>' + td.kategori.map((k, i) => {
+        const kat = M().kategori.find(x => x.kode === k);
+        return '<div class="opRow"><span class="nm">' + esc(kat ? kat.nama : k) + '</span>' + tombolGeser(i, td.kategori.length, 'data-k') + '</div>';
+      }).join('');
+    } else {
+      const list = td.produk[bagian] || [], pm = produkMap();
+      html += '<div class="hint" style="margin:8px 0;">⤒ = langsung paling atas. Hilangkan centang untuk menyembunyikan produk di cabang ini.</div>' +
+        (list.length ? list.map((kode, i) => '<div class="opRow"><input type="checkbox" data-s="' + esc(kode) + '" style="width:24px; min-height:24px;" aria-label="Tampil"' +
+          (td.sembunyi.indexOf(kode) < 0 ? ' checked' : '') + '><span class="nm"' + (td.sembunyi.indexOf(kode) < 0 ? '' : ' style="opacity:.45; text-decoration:line-through;"') + '><b>' + (i + 1) + '.</b> ' +
+          esc(pm[kode] ? pm[kode].nama : kode) + '</span>' + tombolGeser(i, list.length, 'data-p') + '</div>').join('') : '<div class="kosongInfo">Tidak ada produk di kategori ini.</div>');
+    }
+    $('mIsi').innerHTML = html + '<div class="err" id="tpErr"></div>';
+  };
+  const geser = (arr, i, d) => {
+    const x = arr.splice(i, 1)[0];
+    const j = d === 'atas' ? 0 : d === 'bawah' ? arr.length : i + Number(d);
+    arr.splice(j, 0, x);
   };
   modal('Atur tampilan ' + S.sesi.cabang.nama, '', [{ t: 'Batal', c: 'ghost', f: tutupModal }, { t: 'Simpan', id: 'btnTp', f: async () => {
     sibuk(true, 'Menyimpan tampilan...');
@@ -1119,11 +1148,18 @@ function dialogTampilan() {
     } catch (e) { sibuk(false); $('tpErr').textContent = 'Gagal (' + e.message + '). Atur tampilan butuh internet.'; }
   } }]);
   $('mIsi').onclick = e => {
-    const b = e.target.closest('button[data-u]');
-    if (b) { const i = Number(b.dataset.u), j = i + Number(b.dataset.d); const t = td.kategori[i]; td.kategori[i] = td.kategori[j]; td.kategori[j] = t; gambar(); }
+    const b = e.target.closest('button[data-d]'); if (!b || b.disabled) return;
+    const sc = $('mIsi').scrollTop;
+    if (b.dataset.k !== undefined) geser(td.kategori, Number(b.dataset.k), b.dataset.d);
+    else geser(td.produk[bagian], Number(b.dataset.p), b.dataset.d);
+    gambar(); $('mIsi').scrollTop = b.dataset.d === 'atas' ? 0 : sc;
   };
-  $('mIsi').onchange = e => { const c = e.target.closest('input[data-s]'); if (!c) return; const k = c.dataset.s;
-    td.sembunyi = td.sembunyi.filter(x => x !== k); if (!c.checked) td.sembunyi.push(k); };
+  $('mIsi').onchange = e => {
+    if (e.target.id === 'tpBagian') { bagian = e.target.value; gambar(); return; }
+    const c = e.target.closest('input[data-s]'); if (!c) return; const k = c.dataset.s;
+    td.sembunyi = td.sembunyi.filter(x => x !== k); if (!c.checked) td.sembunyi.push(k);
+    const sc = $('mIsi').scrollTop; gambar(); $('mIsi').scrollTop = sc;
+  };
   gambar();
 }
 // ---------- keluar perangkat ----------
