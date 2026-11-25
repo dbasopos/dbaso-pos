@@ -250,7 +250,7 @@
 
 <script>
 'use strict';
-const VERSI_APP = '1.0.2 (25 Nov 2026)';
+const VERSI_APP = '1.0.3 (25 Nov 2026)';
 // =====================================================================
 // PENYIMPANAN DI TABLET (IndexedDB, kunci -> nilai)
 // =====================================================================
@@ -920,7 +920,7 @@ function htmlStruk(t) {
 }
 function ringkasOpsi(opsi) { const c = {}; opsi.forEach(o => { c[o.nama] = (c[o.nama] || 0) + 1; }); return Object.keys(c).map(k => k + (c[k] > 1 ? ' ×' + c[k] : '')).join(', '); }
 function namaMetode(k) { const m = M().metode.find(x => x.kode === k); return m ? m.nama : k; }
-function pillStatus(s, pesan) { return s === 'TERKIRIM' ? '<span class="pill ok">terkirim</span>' : s === 'DITOLAK' ? '<span class="pill tlk" title="' + esc(pesan || '') + '">ditolak server</span>' : '<span class="pill blm">belum terkirim</span>'; }
+function pillStatus(s, pesan) { if (s === 'BATAL') return '<span class="pill tlk">dibatalkan admin</span>'; return s === 'TERKIRIM' ? '<span class="pill ok">terkirim</span>' : s === 'DITOLAK' ? '<span class="pill tlk" title="' + esc(pesan || '') + '">ditolak server</span>' : '<span class="pill blm">belum terkirim</span>'; }
 function tampilStruk(t, baru) {
   modal(baru ? 'Transaksi selesai' : 'Transaksi ' + t.no, (baru && t.metode === 'TUNAI' ? '<div class="angkaBesar" style="color:var(--hijau); margin-bottom:10px;">Kembali ' + rp(t.kembali) + '</div>' : '') +
     htmlStruk(t) + '<div style="margin-top:8px;">' + pillStatus(t.status, t.pesan) + (t.pesan ? '<div class="err">' + esc(t.pesan) + '</div>' : '') + '</div>' +
@@ -963,7 +963,11 @@ async function sinkron(paksa) {
     // 2) ambil data terbaru
     const d = await api('sync', {});
     S.master = d; S.syncJam = waktu();
-    await Promise.all([simpanKe('master'), simpanKe('syncJam')]);
+    const batal = {}; (d.batal || []).forEach(b => { batal[b.id] = b; });
+    let baruBatal = 0;
+    S.riwayat.forEach(t => { const b = batal[t.id]; if (b && t.status !== 'BATAL') { t.status = 'BATAL'; t.pesan = 'Dibatalkan admin (' + b.oleh + '): ' + b.alasan; baruBatal++; } });
+    await Promise.all([simpanKe('master'), simpanKe('syncJam'), simpanKe('riwayat')]);
+    if (baruBatal) tumpuk(baruBatal + ' transaksi dibatalkan admin. Lihat di Riwayat.', 5000);
     if (S.kasir && !d.kasir.some(k => k.id === S.kasir.id)) { S.sedangSync = false; bukaPin('Kasir ' + S.kasir.nama + ' sudah tidak aktif di cabang ini.'); return; }
   } catch (e) {
     S.gagalSync = e.message;
@@ -1002,10 +1006,12 @@ function menuAksi(m) {
 }
 function dialogRiwayat() {
   const hariIni = waktu().slice(0, 10);
-  const list = S.riwayat.filter(t => t.waktu.slice(0, 10) === hariIni || t.status !== 'TERKIRIM');
-  const total = list.filter(t => t.waktu.slice(0, 10) === hariIni).reduce((a, t) => a + t.total, 0);
-  modal('Riwayat transaksi', '<div class="hint" style="margin-bottom:8px;">Hari ini: ' + list.filter(t => t.waktu.slice(0, 10) === hariIni).length + ' transaksi, ' + rp(total) + '. Data lebih lama ada di Hub.</div>' +
-    (list.length ? list.map((t, i) => '<button class="brs" data-r="' + S.riwayat.indexOf(t) + '"><span class="n"><b>' + esc(t.no) + '</b><small>' + esc(t.waktu.slice(11, 16) + ' · ' + namaTipe(t.tipe) + ' · ' + namaMetode(t.metode) + ' · ' + t.namaKasir) + '</small>' +
+  const list = S.riwayat.filter(t => t.waktu.slice(0, 10) === hariIni || (t.status !== 'TERKIRIM' && t.status !== 'BATAL'));
+  const sah = list.filter(t => t.waktu.slice(0, 10) === hariIni && t.status !== 'BATAL');
+  const nBatal = list.filter(t => t.status === 'BATAL').length;
+  modal('Riwayat transaksi', '<div class="hint" style="margin-bottom:8px;">Hari ini: ' + sah.length + ' transaksi, ' + rp(sah.reduce((a, t) => a + t.total, 0)) +
+    (nBatal ? ' (tanpa ' + nBatal + ' yang dibatalkan admin)' : '') + '. Data lebih lama ada di Hub.</div>' +
+    (list.length ? list.map((t, i) => '<button class="brs' + (t.status === 'BATAL' ? ' tolak' : '') + '" data-r="' + S.riwayat.indexOf(t) + '"><span class="n"><b>' + esc(t.no) + '</b><small>' + esc(t.waktu.slice(11, 16) + ' · ' + namaTipe(t.tipe) + ' · ' + namaMetode(t.metode) + ' · ' + t.namaKasir) + '</small>' +
       pillStatus(t.status, t.pesan) + '</span><span class="r">' + rp(t.total) + '</span></button>').join('') : '<div class="kosongInfo">Belum ada transaksi hari ini.</div>'), [], null, { luar: true });
   $('mIsi').onclick = e => { const b = e.target.closest('[data-r]'); if (!b) return; tampilStruk(S.riwayat[Number(b.dataset.r)], false); };
 }
@@ -1055,12 +1061,13 @@ function dialogKasRiwayat() {
 // ---------- rekap & tutup kasir ----------
 function rekapShift() {
   const id = S.shift.id;
-  const trx = S.riwayat.filter(t => t.idShift === id);
+  const trx = S.riwayat.filter(t => t.idShift === id && t.status !== 'BATAL');
   const per = {};
   trx.forEach(t => { per[t.metode] = (per[t.metode] || 0) + t.total; });
   const tunai = per.TUNAI || 0, nonTunai = trx.reduce((a, t) => a + t.total, 0) - tunai;
   const kas = S.kasLokal.filter(k => k.idShift === id).reduce((a, k) => a + k.total, 0);
-  return { trx: trx, per: per, tunai: tunai, nonTunai: nonTunai, kas: kas, seharusnya: S.shift.modal + tunai - kas };
+  const batal = S.riwayat.filter(t => t.idShift === id && t.status === 'BATAL');
+  return { trx: trx, per: per, tunai: tunai, nonTunai: nonTunai, kas: kas, seharusnya: S.shift.modal + tunai - kas, batal: batal };
 }
 async function dialogTutup() {
   if (!S.shift) { tumpuk('Kasir belum dibuka.'); return; }
@@ -1078,7 +1085,8 @@ async function dialogTutup() {
     Object.keys(r.per).map(k => '<tr><td>Penjualan ' + esc(namaMetode(k)) + '</td><td class="r">' + rp(r.per[k]) + '</td></tr>').join('') +
     '<tr><td>Kas keluar</td><td class="r">− ' + rp(r.kas) + '</td></tr>' +
     '<tr><td><b>Uang tunai seharusnya di laci</b><div class="hint">modal + penjualan tunai − kas keluar</div></td><td class="r"><b>' + rp(r.seharusnya) + '</b></td></tr></table>' +
-    '<div class="hint" style="margin-top:6px;">' + r.trx.length + ' transaksi. Non-tunai ' + rp(r.nonTunai) + ' tidak masuk laci.</div>' +
+    '<div class="hint" style="margin-top:6px;">' + r.trx.length + ' transaksi. Non-tunai ' + rp(r.nonTunai) + ' tidak masuk laci.' +
+      (r.batal.length ? ' <b style="color:var(--merah);">' + r.batal.length + ' transaksi dibatalkan admin (' + rp(r.batal.reduce((a, t) => a + t.total, 0)) + ') tidak dihitung.</b>' : '') + '</div>' +
     '<label class="lbl" for="inSetor">Uang tunai dihitung (setoran)</label><input id="inSetor" inputmode="numeric" class="angkaBesar">' +
     '<div class="angkaBesar" id="selisih" style="font-size:18px; margin-top:8px;"></div>' +
     '<label class="lbl" for="inCatTutup">Catatan (opsional)</label><input id="inCatTutup" maxlength="200"><div class="err" id="ttpErr"></div>',
