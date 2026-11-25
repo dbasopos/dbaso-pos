@@ -251,7 +251,7 @@
 
 <script>
 'use strict';
-const VERSI_APP = '1.0 (25 Nov 2026)';
+const VERSI_APP = '1.0.1 (25 Nov 2026)';
 // =====================================================================
 // PENYIMPANAN DI TABLET (IndexedDB, kunci -> nilai)
 // =====================================================================
@@ -320,8 +320,10 @@ function tampil(id) { document.querySelectorAll('.layar').forEach(l => l.classLi
 function sedangDi(id) { return $(id).classList.contains('on'); }
 
 // ---------- modal umum ----------
-let mOnTutup = null;
-function modal(judul, isiHtml, tombol, onTutup) {
+let mOnTutup = null, mLuar = false, mSibuk = false;
+// opsi.luar = true: tekan di luar kotak menutup (hanya untuk daftar/pilihan). Selain itu kotak hanya tertutup lewat tombolnya.
+function modal(judul, isiHtml, tombol, onTutup, opsi) {
+  mLuar = !!(opsi && opsi.luar); sibuk(false);
   $('mJudul').textContent = judul; $('mIsi').innerHTML = isiHtml;
   const k = $('mKaki'); k.innerHTML = '';
   (tombol || []).forEach(b => {
@@ -332,9 +334,18 @@ function modal(judul, isiHtml, tombol, onTutup) {
   mOnTutup = onTutup || null;
   $('modal').classList.add('on'); $('mIsi').scrollTop = 0;
 }
-function tutupModal() { $('modal').classList.remove('on'); const f = mOnTutup; mOnTutup = null; if (f) f(); }
+function tutupModal() { if (mSibuk) return; $('modal').classList.remove('on'); const f = mOnTutup; mOnTutup = null; if (f) f(); }
+// sedang memproses (kirim, tutup kasir): semua tombol & tanda × dimatikan, kotak tidak bisa ditutup
+function sibuk(on, teks) {
+  mSibuk = !!on;
+  $('mTutup').style.visibility = on ? 'hidden' : '';
+  document.querySelectorAll('#mKaki button, #mIsi button, #mIsi input, #mIsi select').forEach(b => { if (on) { b.dataset.tadi = b.disabled ? '1' : ''; b.disabled = true; } else if (b.dataset.tadi !== undefined) { b.disabled = b.dataset.tadi === '1'; delete b.dataset.tadi; } });
+  let el = $('mSibuk');
+  if (on) { if (!el) { el = document.createElement('div'); el.id = 'mSibuk'; el.style.cssText = 'padding:10px 16px; background:#fef3c7; color:#78350f; font-weight:600; text-align:center;'; $('mKaki').before(el); } el.textContent = '⏳ ' + (teks || 'Memproses...') + ' Jangan tutup aplikasi.'; }
+  else if (el) el.remove();
+}
 $('mTutup').onclick = tutupModal;
-$('modal').addEventListener('click', e => { if (e.target.id === 'modal') tutupModal(); });
+$('modal').addEventListener('click', e => { if (e.target.id === 'modal' && mLuar) tutupModal(); });
 function tanya(judul, pesan, ya, labelYa, kelasYa) {
   modal(judul, '<div style="white-space:pre-line;">' + esc(pesan) + '</div>', [{ t: 'Batal', c: 'ghost', f: tutupModal }, { t: labelYa || 'Ya', c: kelasYa || '', f: () => { tutupModal(); ya(); } }]);
 }
@@ -420,7 +431,7 @@ let pinIsi = '';
 })();
 function bukaPin(pesan) {
   S.kasir = null; pinIsi = '';
-  mOnTutup = null; $('modal').classList.remove('on'); $('menu').classList.remove('on'); tutupKrHp();
+  mOnTutup = null; sibuk(false); $('modal').classList.remove('on'); $('menu').classList.remove('on'); tutupKrHp();
   tampil('lyPin');
   $('pinCab').textContent = S.sesi.cabang.nama + ' · ' + S.sesi.kodePerangkat;
   const n = ((S.master && S.master.kasir) || []).length;
@@ -753,7 +764,7 @@ function dialogBaris(i) {
 // ---------- tipe penjualan ----------
 $('btnTipe').onclick = () => {
   modal('Tipe penjualan', '<div class="pilih">' + M().tipe.map(t => '<button data-t="' + esc(t.kode) + '" class="' + (S.kr.tipe === t.kode ? 'on' : '') + '">' + esc(t.nama) + '</button>').join('') + '</div>' +
-    '<div class="hint" style="margin-top:10px;">Harga keranjang ikut berubah sesuai tipe.</div>', []);
+    '<div class="hint" style="margin-top:10px;">Harga keranjang ikut berubah sesuai tipe.</div>', [], null, { luar: true });
   $('mIsi').onclick = e => { const b = e.target.closest('button[data-t]'); if (!b) return; S.kr.tipe = b.dataset.t; simpanKr(); tutupModal(); gambarKeranjang(); gambarGrid(); };
 };
 $('btnPelanggan').onclick = () => {
@@ -804,12 +815,12 @@ $('btnSimpan').onclick = () => {
 };
 $('btnSimpanan').onclick = () => dialogSimpanan();
 function dialogSimpanan() {
-  if (!S.simpanan.length) { modal('Keranjang tersimpan', '<div class="kosongInfo">Belum ada keranjang tersimpan.</div>', []); return; }
+  if (!S.simpanan.length) { modal('Keranjang tersimpan', '<div class="kosongInfo">Belum ada keranjang tersimpan.</div>', [], null, { luar: true }); return; }
   modal('Keranjang tersimpan', S.simpanan.map((x, i) => {
     const jml = x.kr.item.reduce((a, b) => a + b.jumlah, 0);
     return '<div class="opRow"><span class="nm"><b>' + esc(x.label) + '</b><br><span class="hint">' + esc(x.waktu.slice(11, 16) + ' · ' + x.kasir + ' · ' + jml + ' item · ' + namaTipe(x.kr.tipe)) + '</span></span>' +
       '<button class="ghost" data-h="' + i + '">Hapus</button><button data-b="' + i + '">Buka</button></div>';
-  }).join(''), []);
+  }).join(''), [], null, { luar: true });
   $('mIsi').onclick = async e => {
     const b = e.target.closest('button'); if (!b) return;
     if (b.dataset.h !== undefined) { const i = Number(b.dataset.h); tanya('Hapus keranjang?', S.simpanan[i].label, async () => { S.simpanan.splice(i, 1); await simpanKe('simpanan'); gambarSemua(); dialogSimpanan(); }, 'Hapus', 'merah'); return; }
@@ -825,7 +836,7 @@ function dialogSimpanan() {
 $('btnLihatKr').onclick = () => { $('keranjang').classList.add('on'); };
 function tutupKrHp() { $('keranjang').classList.remove('on'); }
 $('btnTutupKr').onclick = tutupKrHp;
-document.addEventListener('keydown', e => { if (e.key === 'Escape') { if ($('modal').classList.contains('on')) tutupModal(); else tutupKrHp(); } });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') { if ($('modal').classList.contains('on')) { if (mLuar) tutupModal(); } else tutupKrHp(); } });
 $('keranjang').addEventListener('click', e => { if (e.target.id === 'keranjang') tutupKrHp(); });
 
 // =====================================================================
@@ -875,7 +886,7 @@ function nomorBaru(akhiran) {
   return S.sesi.cabang.kode + '-' + S.sesi.kodePerangkat + '-' + tgl + '-' + (akhiran || '') + String(S.seq[k]).padStart(akhiran ? 3 : 4, '0');
 }
 async function selesaiTransaksi(h, metode, dibayar) {
-  $('btnSelesai').disabled = true;
+  sibuk(true, 'Menyimpan transaksi...');
   const t = {
     id: uuid(), no: nomorBaru(), idShift: S.shift ? S.shift.id : '', idKasir: S.kasir.id, namaKasir: S.kasir.nama, waktu: waktu(), tipe: S.kr.tipe,
     pelanggan: S.kr.pelanggan,
@@ -889,7 +900,7 @@ async function selesaiTransaksi(h, metode, dibayar) {
   S.riwayat.unshift(Object.assign({}, t, { status: 'BELUM' }));
   if (S.riwayat.length > 600) S.riwayat.length = 600;
   S.kr = krBaru();
-  await Promise.all([simpanKe('antrian'), simpanKe('riwayat'), simpanKr()]);
+  try { await Promise.all([simpanKe('antrian'), simpanKe('riwayat'), simpanKr()]); } finally { sibuk(false); }
   tutupKrHp(); gambarSemua();
   tampilStruk(S.riwayat[0], true);
   sinkron();
@@ -993,7 +1004,7 @@ function dialogRiwayat() {
   const total = list.filter(t => t.waktu.slice(0, 10) === hariIni).reduce((a, t) => a + t.total, 0);
   modal('Riwayat transaksi', '<div class="hint" style="margin-bottom:8px;">Hari ini: ' + list.filter(t => t.waktu.slice(0, 10) === hariIni).length + ' transaksi, ' + rp(total) + '. Data lebih lama ada di Hub.</div>' +
     (list.length ? list.map((t, i) => '<button class="brs" data-r="' + S.riwayat.indexOf(t) + '"><span class="n"><b>' + esc(t.no) + '</b><small>' + esc(t.waktu.slice(11, 16) + ' · ' + namaTipe(t.tipe) + ' · ' + namaMetode(t.metode) + ' · ' + t.namaKasir) + '</small>' +
-      pillStatus(t.status, t.pesan) + '</span><span class="r">' + rp(t.total) + '</span></button>').join('') : '<div class="kosongInfo">Belum ada transaksi hari ini.</div>'), []);
+      pillStatus(t.status, t.pesan) + '</span><span class="r">' + rp(t.total) + '</span></button>').join('') : '<div class="kosongInfo">Belum ada transaksi hari ini.</div>'), [], null, { luar: true });
   $('mIsi').onclick = e => { const b = e.target.closest('[data-r]'); if (!b) return; tampilStruk(S.riwayat[Number(b.dataset.r)], false); };
 }
 // ---------- kas keluar ----------
@@ -1037,7 +1048,7 @@ function dialogKasRiwayat() {
   const l = S.kasLokal.filter(k => S.shift && k.idShift === S.shift.id);
   modal('Kas keluar shift ini', l.length ? '<table class="tbl">' + l.map(k => '<tr><td><b>' + esc(k.jenis === 'BELI' ? k.namaBarang + ' ' + angka(k.jumlah) + ' ' + k.satuan : 'Biaya') + '</b><div class="hint">' +
     esc(k.waktu.slice(11, 16) + ' · ' + k.keterangan + ' · ' + k.namaKasir) + '</div>' + pillStatus(k.status, k.pesan) + (k.pesan ? '<div class="hint" style="color:var(--kuning);">' + esc(k.pesan) + '</div>' : '') +
-    '</td><td class="r">' + rp(k.total) + '</td></tr>').join('') + '</table>' : '<div class="kosongInfo">Belum ada kas keluar.</div>', []);
+    '</td><td class="r">' + rp(k.total) + '</td></tr>').join('') + '</table>' : '<div class="kosongInfo">Belum ada kas keluar.</div>', [], null, { luar: true });
 }
 // ---------- rekap & tutup kasir ----------
 function rekapShift() {
@@ -1063,9 +1074,9 @@ async function dialogTutup() {
     '<label class="lbl" for="inCatTutup">Catatan (opsional)</label><input id="inCatTutup" maxlength="200"><div class="err" id="ttpErr"></div>',
     [{ t: 'Batal', c: 'ghost', f: tutupModal }, { t: 'Tutup kasir', c: 'merah', id: 'btnTutupKasir', f: async () => {
       if ($('inSetor').value === '') { $('ttpErr').textContent = 'Isi uang tunai yang dihitung.'; return; }
-      const btn = $('btnTutupKasir'); btn.disabled = true; btn.textContent = 'Mengirim data...';
+      sibuk(true, 'Mengirim data & menutup kasir...');
       await sinkron(true);
-      if (belumTerkirim()) { btn.disabled = false; btn.textContent = 'Tutup kasir';
+      if (belumTerkirim()) { sibuk(false);
         $('ttpErr').textContent = 'Masih ada ' + belumTerkirim() + ' data belum terkirim (' + (S.gagalSync || 'cek internet') + '). Tutup kasir harus menunggu semua terkirim supaya rekap di Hub cocok.'; return; }
       const r2 = rekapShift(), setor = nilaiRupiah($('inSetor'));
       S.antrian.shift.push({ id: S.shift.id, idKasir: S.shift.idKasir, buka: S.shift.buka, modal: S.shift.modal, tutup: waktu(), tunai: r2.tunai, nonTunai: r2.nonTunai,
@@ -1074,7 +1085,7 @@ async function dialogTutup() {
       await sinkron(true);
       const sel = setor - r2.seharusnya;
       S.shift = null; await simpanKe('shift');
-      tutupModal();
+      sibuk(false); tutupModal();
       modal('Kasir ditutup', '<div class="angkaBesar">' + (sel === 0 ? '✓ Setoran pas' : (sel > 0 ? 'Lebih ' : 'Kurang ') + rp(Math.abs(sel))) + '</div>' +
         '<div class="hint" style="text-align:center; margin-top:8px;">Setoran ' + rp(setor) + ', seharusnya ' + rp(r2.seharusnya) + '.' + (S.antrian.shift.length ? ' Rekap terkirim saat ada internet.' : ' Rekap sudah terkirim ke Hub.') + '</div>',
         [{ t: 'Selesai', f: () => { tutupModal(); bukaPin('Kasir sudah ditutup.'); } }], () => bukaPin('Kasir sudah ditutup.'));
@@ -1101,11 +1112,11 @@ function dialogTampilan() {
       (td.sembunyi.indexOf(p.kode) < 0 ? ' checked' : '') + '></label>').join('') + '<div class="err" id="tpErr"></div>';
   };
   modal('Atur tampilan ' + S.sesi.cabang.nama, '', [{ t: 'Batal', c: 'ghost', f: tutupModal }, { t: 'Simpan', id: 'btnTp', f: async () => {
-    const b = $('btnTp'); b.disabled = true;
+    sibuk(true, 'Menyimpan tampilan...');
     try {
       const r = await api('simpanTampilan', { tampilan: td, idKasir: S.kasir.id });
-      S.master.tampilan = r.tampilan; await simpanKe('master'); tutupModal(); gambarSemua(); tumpuk(r.pesan, 4000);
-    } catch (e) { b.disabled = false; $('tpErr').textContent = 'Gagal (' + e.message + '). Atur tampilan butuh internet.'; }
+      S.master.tampilan = r.tampilan; await simpanKe('master'); sibuk(false); tutupModal(); gambarSemua(); tumpuk(r.pesan, 4000);
+    } catch (e) { sibuk(false); $('tpErr').textContent = 'Gagal (' + e.message + '). Atur tampilan butuh internet.'; }
   } }]);
   $('mIsi').onclick = e => {
     const b = e.target.closest('button[data-u]');
