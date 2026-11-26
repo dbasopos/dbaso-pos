@@ -238,7 +238,8 @@
     <button class="itm" data-m="tutup">🔒 Rekap Kas &amp; Tutup Kasir</button>
     <button class="itm" data-m="tampilan">🎨 Atur Tampilan<small>Urutan kategori, urutan produk, sembunyikan produk</small></button>
     <button class="itm" data-m="printer" disabled>🖨 Pengaturan Printer<small>Menyusul (tahap 4)</small></button>
-    <button class="itm" data-m="ganti">👤 Ganti Kasir</button>
+    <button class="itm" data-m="stok">📦 Hitung Stok Harian<small>Wajib sebelum tutup kasir</small></button>
+    <button class="itm" data-m="serah">🤝 Serah Terima Kasir<small>Ganti orang: hitung uang laci</small></button>
     <button class="itm" data-m="keluar" style="color:var(--merah);">⏏ Keluar Perangkat</button>
     <div class="hint" style="padding:12px 16px;" id="mVersi"></div>
   </div>
@@ -250,7 +251,7 @@
 
 <script>
 'use strict';
-const VERSI_APP = '1.1 (25 Nov 2026)';
+const VERSI_APP = '1.2 (26 Nov 2026)';
 // =====================================================================
 // PENYIMPANAN DI TABLET (IndexedDB, kunci -> nilai)
 // =====================================================================
@@ -276,7 +277,8 @@ const S = {
   syncJam: '',       // jam sync terakhir berhasil
   kasir: null,       // { id, nama } yang sedang aktif (tidak disimpan: setiap buka aplikasi minta PIN)
   shift: null,       // { id, idKasir, namaKasir, buka, modal }
-  antrian: { transaksi: [], kasKeluar: [], shift: [] },
+  antrian: { transaksi: [], kasKeluar: [], shift: [], serahTerima: [] },
+  stokDraft: null,   // { idShift, item: { kode: { kotak: [..], waktu } } } hitung stok harian (draft)
   riwayat: [],       // transaksi perangkat ini (terbaru dulu, maks 600)
   kasLokal: [],      // kas keluar perangkat ini (maks 300)
   simpanan: [],      // keranjang tersimpan
@@ -289,11 +291,12 @@ const S = {
 };
 const simpanKe = (k) => DB.set(k, S[k]);
 async function muatSemua() {
-  for (const k of ['sesi', 'master', 'syncJam', 'shift', 'antrian', 'riwayat', 'kasLokal', 'simpanan', 'seq']) {
+  for (const k of ['sesi', 'master', 'syncJam', 'shift', 'antrian', 'riwayat', 'kasLokal', 'simpanan', 'seq', 'stokDraft']) {
     const v = await DB.get(k);
     if (v !== undefined) S[k] = v;
   }
-  S.antrian = Object.assign({ transaksi: [], kasKeluar: [], shift: [] }, S.antrian || {});
+  S.antrian = Object.assign({ transaksi: [], kasKeluar: [], shift: [], serahTerima: [] }, S.antrian || {});
+  if (S.shift && !S.shift.segmen) S.shift.segmen = { no: 1, idKasir: S.shift.idKasir, nama: S.shift.namaKasir, mulai: S.shift.buka, uangAwal: S.shift.modal };   // shift versi lama
   S.kr = (await DB.get('kr')) || krBaru();
 }
 function krBaru() { return { tipe: 'TOKO', pelanggan: '', item: [], diskon: null }; }
@@ -432,7 +435,7 @@ function bukaPin(pesan) {
   S.kasir = null; pinIsi = '';
   mOnTutup = null; sibuk(false); $('modal').classList.remove('on'); $('menu').classList.remove('on'); tutupKrHp();
   tampil('lyPin');
-  $('pinCab').textContent = S.sesi.cabang.nama + ' · ' + S.sesi.kodePerangkat;
+  $('pinCab').textContent = S.sesi.cabang.nama + ' · ' + S.sesi.kodePerangkat + (S.shift && S.shift.segmen ? ' · kasir aktif: ' + S.shift.segmen.nama : '');
   const n = ((S.master && S.master.kasir) || []).length;
   $('pinPesan').textContent = pesan || (n ? '' : 'Belum ada kasir untuk cabang ini. Buat di Hub › Fungsi POS › Kasir & PIN, lalu tekan Sync.');
   gambarTitik();
@@ -454,7 +457,12 @@ async function tekanPin(k) {
     else $('pinPesan').textContent = 'PIN salah.';
     return;
   }
-  S.pinSalah = 0; S.kasir = { id: cocok.id, nama: cocok.nama }; S.terakhirSentuh = Date.now();
+  S.pinSalah = 0;
+  if (S.shift && S.shift.segmen && S.shift.segmen.idKasir !== cocok.id) {
+    $('pinPesan').textContent = 'Kasir aktif masih ' + S.shift.segmen.nama + '. ' + S.shift.segmen.nama + ' harus masuk lalu Serah Terima Kasir ke ' + cocok.nama + '.';
+    return;
+  }
+  S.kasir = { id: cocok.id, nama: cocok.nama }; S.terakhirSentuh = Date.now();
   masukUtama();
 }
 document.addEventListener('keydown', e => { if (sedangDi('lyPin') && /^[0-9]$/.test(e.key)) tekanPin(e.key); else if (sedangDi('lyPin') && e.key === 'Backspace') tekanPin('⌫'); });
@@ -465,7 +473,7 @@ $('pinKeluar').onclick = () => keluarPerangkat();
 ['pointerdown', 'keydown', 'touchstart'].forEach(ev => document.addEventListener(ev, () => { S.terakhirSentuh = Date.now(); }, { passive: true }));
 setInterval(() => {
   if (!S.kasir || !sedangDi('lyUtama')) return;
-  const menit = (S.master && S.master.kunciMenit) || 15;
+  const menit = (S.master && S.master.kunciMenit) || 30;
   if (Date.now() - S.terakhirSentuh > menit * 60000) bukaPin('Layar terkunci karena ' + menit + ' menit tidak dipakai.');
 }, 15000);
 
@@ -482,10 +490,11 @@ function masukUtama() {
 function bukaShiftDialog() {
   modal('Buka kasir', '<div>Kasir: <b>' + esc(S.kasir.nama) + '</b></div><label class="lbl" for="inModal">Modal awal di laci (Rp)</label>' +
     '<input id="inModal" inputmode="numeric" class="angkaBesar" placeholder="0"><div class="err" id="modalErr"></div>',
-    [{ t: 'Ganti kasir', c: 'ghost', f: () => bukaPin() }, { t: 'Buka kasir', c: 'hijau', f: async () => {
+    [{ t: 'Bukan saya', c: 'ghost', f: () => bukaPin() }, { t: 'Buka kasir', c: 'hijau', f: async () => {
       const v = String($('inModal').value).replace(/\D/g, '');
       if (v === '') { $('modalErr').textContent = 'Isi modal awal (boleh 0).'; return; }
-      S.shift = { id: uuid(), idKasir: S.kasir.id, namaKasir: S.kasir.nama, buka: waktu(), modal: Number(v) };
+      const bk = waktu();
+      S.shift = { id: uuid(), idKasir: S.kasir.id, namaKasir: S.kasir.nama, buka: bk, modal: Number(v), segmen: { no: 1, idKasir: S.kasir.id, nama: S.kasir.nama, mulai: bk, uangAwal: Number(v) } };
       await simpanKe('shift');
       S.antrian.shift.push({ id: S.shift.id, idKasir: S.shift.idKasir, buka: S.shift.buka, modal: S.shift.modal });
       await simpanKe('antrian');
@@ -546,7 +555,7 @@ function gambarSemua() {
   gambarSync(); gambarKategori(); gambarGrid(); gambarKeranjang();
   $('bdSimpanan').textContent = S.simpanan.length;
 }
-function belumTerkirim() { return S.antrian.transaksi.length + S.antrian.kasKeluar.length; }
+function belumTerkirim() { return S.antrian.transaksi.length + S.antrian.kasKeluar.length + (S.antrian.serahTerima || []).length; }
 function gambarSync() {
   const el = $('stSync'), n = belumTerkirim();
   el.className = S.gagalSync && n ? 'gagal' : n ? 'belum' : '';
@@ -890,7 +899,7 @@ function nomorBaru(akhiran) {
 async function selesaiTransaksi(h, metode, dibayar) {
   sibuk(true, 'Menyimpan transaksi...');
   const t = {
-    id: uuid(), no: nomorBaru(), idShift: S.shift ? S.shift.id : '', idKasir: S.kasir.id, namaKasir: S.kasir.nama, waktu: waktu(), tipe: S.kr.tipe,
+    id: uuid(), no: nomorBaru(), idShift: S.shift ? S.shift.id : '', seg: S.shift && S.shift.segmen ? S.shift.segmen.no : 1, idKasir: S.kasir.id, namaKasir: S.kasir.nama, waktu: waktu(), tipe: S.kr.tipe,
     pelanggan: S.kr.pelanggan,
     item: S.kr.item.map((it, i) => { const b = h.brs[i]; return { kode: it.kode, nama: it.nama, jumlah: it.jumlah, hargaProduk: b.hargaProduk,
       opsi: b.opsi.map(o => ({ grup: o.grup, nama: o.nama, harga: o.harga, potong: o.potong })), hargaSatuan: b.hargaSatuan, subtotal: b.subtotal,
@@ -941,8 +950,12 @@ async function sinkron(paksa) {
       const trx = S.antrian.transaksi.slice(0, 50);
       const kas = S.antrian.kasKeluar.slice(0, 50 - trx.length);
       const shf = S.antrian.shift.slice(0, 20);
-      if (!trx.length && !kas.length && !shf.length) break;
-      const r = await api('kirim', { transaksi: trx, kasKeluar: kas, shift: shf });
+      const srh = S.antrian.serahTerima.slice(0, 30);
+      if (!trx.length && !kas.length && !shf.length && !srh.length) break;
+      const r = await api('kirim', { transaksi: trx, kasKeluar: kas, shift: shf, serahTerima: srh });
+      const okSrh = {}; (r.serahTerima || []).forEach(x => { okSrh[x.id] = x; });
+      S.antrian.serahTerima = S.antrian.serahTerima.filter(x => !okSrh[x.id]);
+      (r.serahTerima || []).filter(x => x.status === 'DITOLAK').forEach(x => tumpuk('⚠ Serah terima ditolak server: ' + x.pesan, 6000));
       const beres = (list, res, riwayat) => {
         const st = {}; (res || []).forEach(x => { st[x.id] = x; });
         list.forEach(x => {
@@ -1001,7 +1014,8 @@ function menuAksi(m) {
   else if (m === 'kas') dialogKas();
   else if (m === 'tutup') dialogTutup();
   else if (m === 'tampilan') dialogTampilan();
-  else if (m === 'ganti') bukaPin();
+  else if (m === 'serah') dialogSerah();
+  else if (m === 'stok') dialogStokHarian();
   else if (m === 'keluar') keluarPerangkat();
 }
 function dialogRiwayat() {
@@ -1042,7 +1056,7 @@ function dialogKas() {
     if (!(total > 0)) { err.textContent = 'Isi total uang keluar.'; return; }
     if (batas && total > batas) { err.textContent = 'Di atas batas ' + rp(batas) + '. Pembelian sebesar ini harus lewat pusat.'; return; }
     if (ket.length < 3) { err.textContent = 'Keterangan wajib diisi.'; return; }
-    const k = { id: uuid(), no: nomorBaru('K'), idShift: S.shift.id, idKasir: S.kasir.id, namaKasir: S.kasir.nama, waktu: waktu(), jenis: jenis,
+    const k = { id: uuid(), no: nomorBaru('K'), idShift: S.shift.id, seg: S.shift.segmen ? S.shift.segmen.no : 1, idKasir: S.kasir.id, namaKasir: S.kasir.nama, waktu: waktu(), jenis: jenis,
       kodeBarang: kode, namaBarang: nama, satuan: satuan, jumlah: jml, total: total, keterangan: ket };
     S.antrian.kasKeluar.push(k);
     S.kasLokal.unshift(Object.assign({}, k, { status: 'BELUM' })); if (S.kasLokal.length > 300) S.kasLokal.length = 300;
@@ -1059,82 +1073,208 @@ function dialogKasRiwayat() {
     '</td><td class="r">' + rp(k.total) + '</td></tr>').join('') + '</table>' : '<div class="kosongInfo">Belum ada kas keluar.</div>', [], null, { luar: true });
 }
 // ---------- rekap & tutup kasir ----------
-function rekapShift() {
+// rekap 1 bagian kasir (segmen) atau seluruh shift (seg = null)
+function rekapShift(seg) {
   const id = S.shift.id;
-  const trx = S.riwayat.filter(t => t.idShift === id && t.status !== 'BATAL');
+  const cocok = x => x.idShift === id && (seg == null || (x.seg || 1) === seg);
+  const trx = S.riwayat.filter(t => cocok(t) && t.status !== 'BATAL');
   const per = {};
   trx.forEach(t => { per[t.metode] = (per[t.metode] || 0) + t.total; });
   const tunai = per.TUNAI || 0, nonTunai = trx.reduce((a, t) => a + t.total, 0) - tunai;
-  const kas = S.kasLokal.filter(k => k.idShift === id).reduce((a, k) => a + k.total, 0);
-  const batal = S.riwayat.filter(t => t.idShift === id && t.status === 'BATAL');
-  return { trx: trx, per: per, tunai: tunai, nonTunai: nonTunai, kas: kas, seharusnya: S.shift.modal + tunai - kas, batal: batal };
+  const kas = S.kasLokal.filter(cocok).reduce((a, k) => a + k.total, 0);
+  const batal = S.riwayat.filter(t => cocok(t) && t.status === 'BATAL');
+  const awal = seg == null ? S.shift.modal : S.shift.segmen.uangAwal;
+  return { trx: trx, per: per, tunai: tunai, nonTunai: nonTunai, kas: kas, uangAwal: awal, seharusnya: awal + tunai - kas, batal: batal };
 }
+function htmlRekapSeg(r, judulAwal) {
+  return '<table class="tbl"><tr><td>' + judulAwal + '</td><td class="r">' + rp(r.uangAwal) + '</td></tr>' +
+    '<tr><td>+ Penjualan tunai</td><td class="r">' + rp(r.tunai) + '</td></tr>' +
+    '<tr><td>− Kas keluar</td><td class="r">' + rp(r.kas) + '</td></tr>' +
+    '<tr><td><b>Uang tunai seharusnya di laci</b></td><td class="r"><b>' + rp(r.seharusnya) + '</b></td></tr></table>' +
+    '<div class="hint" style="margin-top:6px;">' + r.trx.length + ' transaksi. Non-tunai ' + rp(r.nonTunai) + ' (tidak masuk laci).' +
+      (r.batal.length ? ' <b style="color:var(--merah);">' + r.batal.length + ' transaksi dibatalkan admin tidak dihitung.</b>' : '') + '</div>';
+}
+function pasangSelisih(inp, el, seharusnya) {
+  pasangRupiah(inp);
+  inp.addEventListener('input', () => {
+    const s = nilaiRupiah(inp) - seharusnya;
+    el.textContent = inp.value === '' ? '' : s === 0 ? '✓ Pas' : (s > 0 ? 'Lebih ' : 'Kurang ') + rp(Math.abs(s));
+    el.style.color = s === 0 ? 'var(--hijau)' : 'var(--merah)';
+  });
+}
+function cekBelumSelesai(judul) {
+  if (!S.kr.item.length && !S.simpanan.length) return false;
+  modal(judul, '<div style="white-space:pre-line;">Masih ada transaksi yang belum selesai:\n' +
+    (S.kr.item.length ? '• Keranjang yang sedang diisi (' + S.kr.item.reduce((a, x) => a + x.jumlah, 0) + ' item)\n' : '') +
+    (S.simpanan.length ? '• ' + S.simpanan.length + ' keranjang tersimpan: ' + esc(S.simpanan.map(x => x.label).join(', ')) + '\n' : '') +
+    '\nSelesaikan pembayarannya, atau hapus kalau batal.</div>',
+    [{ t: 'Tutup', c: 'ghost', f: tutupModal }].concat(S.simpanan.length ? [{ t: 'Buka keranjang tersimpan', f: () => { tutupModal(); dialogSimpanan(); } }] : []));
+  return true;
+}
+function itemSerah(r, dihitung, jenis, penerima) {
+  return { id: uuid(), idShift: S.shift.id, no: S.shift.segmen.no, idKasir: S.shift.segmen.idKasir, namaKasir: S.shift.segmen.nama, mulai: S.shift.segmen.mulai,
+    selesai: waktu(), uangAwal: S.shift.segmen.uangAwal, tunai: r.tunai, nonTunai: r.nonTunai, kasKeluar: r.kas, dihitung: dihitung, jumlahTrx: r.trx.length,
+    jenis: jenis, idPenerima: penerima ? penerima.id : '', namaPenerima: penerima ? penerima.nama : '' };
+}
+
+// ---------- SERAH TERIMA KASIR (ganti orang: hitung uang laci) ----------
+function dialogSerah() {
+  if (!S.shift) { tumpuk('Kasir belum dibuka.'); return; }
+  if (S.kasir.id !== S.shift.segmen.idKasir) { tumpuk('Hanya kasir aktif yang bisa serah terima.'); return; }
+  const r = rekapShift(S.shift.segmen.no);
+  let dihitung = null;
+  const langkah1 = () => {
+    modal('Serah terima kasir (1/2): hitung uang', '<div>Kasir sekarang: <b>' + esc(S.kasir.nama) + '</b> sejak ' + esc(S.shift.segmen.mulai.slice(11, 16)) + '</div>' +
+      htmlRekapSeg(r, S.shift.segmen.no === 1 ? 'Modal awal' : 'Uang awal (dari serah terima)') +
+      '<label class="lbl" for="inSerah">Uang tunai di laci dihitung</label><input id="inSerah" inputmode="numeric" class="angkaBesar"' + (dihitung !== null ? ' value="' + dihitung.toLocaleString('id-ID') + '"' : '') + '>' +
+      '<div class="angkaBesar" id="serahSel" style="font-size:18px; margin-top:8px;"></div><div class="err" id="serahErr"></div>',
+      [{ t: 'Batal', c: 'ghost', f: tutupModal }, { t: 'Lanjut', f: () => {
+        if ($('inSerah').value === '') { $('serahErr').textContent = 'Isi uang yang dihitung.'; return; }
+        dihitung = nilaiRupiah($('inSerah')); langkah2();
+      } }]);
+    pasangSelisih($('inSerah'), $('serahSel'), r.seharusnya);
+    if (dihitung !== null) $('inSerah').dispatchEvent(new Event('input'));
+    setTimeout(() => $('inSerah').focus(), 50);
+  };
+  const langkah2 = () => {
+    modal('Serah terima kasir (2/2): kasir baru', '<div class="angkaBesar">Rp ' + dihitung.toLocaleString('id-ID') + '</div>' +
+      '<div class="hint" style="text-align:center;">uang laci diserahkan ' + esc(S.kasir.nama) + '</div>' +
+      '<label class="lbl" for="inPinBaru">Kasir baru: hitung ulang uangnya, lalu masukkan PIN kalau setuju</label>' +
+      '<input id="inPinBaru" type="password" inputmode="numeric" maxlength="4" class="angkaBesar" autocomplete="off" placeholder="PIN 4 angka"><div class="err" id="pinBaruErr"></div>',
+      [{ t: 'Tidak sesuai', c: 'ghost', f: langkah1 }, { t: 'Setuju & terima', c: 'hijau', id: 'btnTerima', f: async () => {
+        const pin = $('inPinBaru').value.replace(/\D/g, '');
+        if (pin.length !== 4) { $('pinBaruErr').textContent = 'PIN 4 angka.'; return; }
+        let baru = null;
+        for (const ks of (M().kasir || [])) if (await sha256(ks.id + ':' + pin) === ks.hash) { baru = ks; break; }
+        if (!baru) { $('pinBaruErr').textContent = 'PIN salah.'; $('inPinBaru').value = ''; return; }
+        if (baru.id === S.kasir.id) { $('pinBaruErr').textContent = 'Itu PIN kasir yang sama. Kasir baru yang memasukkan PIN-nya.'; $('inPinBaru').value = ''; return; }
+        sibuk(true, 'Menyimpan serah terima...');
+        const it = itemSerah(rekapShift(S.shift.segmen.no), dihitung, 'SERAH', baru);
+        S.antrian.serahTerima.push(it);
+        S.shift.segmen = { no: S.shift.segmen.no + 1, idKasir: baru.id, nama: baru.nama, mulai: it.selesai, uangAwal: dihitung };
+        S.kasir = { id: baru.id, nama: baru.nama };
+        await Promise.all([simpanKe('antrian'), simpanKe('shift')]);
+        sibuk(false); tutupModal(); gambarSemua();
+        const sel = dihitung - it.uangAwal - it.tunai + it.kasKeluar;
+        tumpuk('Serah terima selesai. ' + it.namaKasir + ': ' + (sel === 0 ? 'pas' : (sel > 0 ? 'lebih ' : 'kurang ') + rp(Math.abs(sel))) + '. Selamat bertugas, ' + baru.nama + '.', 5000);
+        sinkron();
+      } }]);
+    const p = $('inPinBaru'); p.addEventListener('input', () => { p.value = p.value.replace(/\D/g, '').slice(0, 4); });
+    setTimeout(() => p.focus(), 50);
+  };
+  langkah1();
+}
+
+// ---------- HITUNG STOK HARIAN (draft, wajib sebelum tutup kasir) ----------
+function daftarHitung() { return M().hitungTutup || []; }
+function draftStok() {
+  if (!S.stokDraft || !S.shift || S.stokDraft.idShift !== S.shift.id) S.stokDraft = { idShift: S.shift ? S.shift.id : '', item: {} };
+  return S.stokDraft;
+}
+// berapa barang 'kode' terpakai transaksi shift ini SETELAH jam 'w'
+function terpakaiSetelah(kode, w) {
+  let n = 0;
+  S.riwayat.forEach(t => {
+    if (t.idShift !== S.shift.id || t.status === 'BATAL' || t.waktu <= w) return;
+    t.item.forEach(it => {
+      (it.potong || []).forEach(b => { if (b.kode === kode) n += b.jumlah * it.jumlah; });
+      (it.opsi || []).forEach(o => (o.potong || []).forEach(b => { if (b.kode === kode) n += b.jumlah * it.jumlah; }));
+    });
+  });
+  S.kasLokal.forEach(k => { if (k.idShift === S.shift.id && k.jenis === 'BELI' && k.kodeBarang === kode && k.waktu > w) n += Number(k.jumlah) || 0; });   // beli cabang juga mengubah stok
+  return n;
+}
+function statusStok() {   // { lengkap, kurang: [nama], ulang: [{nama, n}] }
+  const d = draftStok(), kurang = [], ulang = [];
+  daftarHitung().forEach(b => {
+    const x = d.item[b.kode];
+    if (!x || !x.kotak.some(v => v !== '')) { kurang.push(b.nama); return; }
+    const n = terpakaiSetelah(b.kode, x.waktu);
+    if (n > 0) ulang.push({ nama: b.nama, n: n, kode: b.kode });
+  });
+  return { lengkap: !kurang.length && !ulang.length, kurang: kurang, ulang: ulang };
+}
+function dialogStokHarian() {
+  if (!S.shift) { tumpuk('Kasir belum dibuka.'); return; }
+  const l = daftarHitung();
+  if (!l.length) { modal('Hitung stok harian', '<div class="kosongInfo">Cabang ini tidak punya barang wajib dihitung (diatur admin di Hub).</div>', [], null, { luar: true }); return; }
+  const d = draftStok(), st = statusStok();
+  const ulang = {}; st.ulang.forEach(x => { ulang[x.kode] = x.n; });
+  modal('Hitung stok harian', '<div class="hint">Hitung sisa barang di cabang. Kotak kosong = 0, tapi tiap barang minimal 1 kotak diisi. Simpan sebagai draft, bisa diperbaiki sampai tutup kasir.</div>' +
+    '<table class="tbl" style="margin-top:8px;">' + l.map(b => {
+      const x = d.item[b.kode] || { kotak: [] }, n = Math.max(1, b.kotak || 1);
+      return '<tr data-k="' + esc(b.kode) + '"><td style="min-width:120px;"><b>' + esc(b.nama) + '</b><div class="hint">' + esc(b.satuan) + '</div>' +
+        (ulang[b.kode] ? '<div class="hint" style="color:var(--merah); font-weight:700;">terjual ' + angka(ulang[b.kode]) + ' setelah dihitung, hitung ulang</div>' : '') + '</td>' +
+        '<td><div style="display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end;">' +
+          Array.from({ length: n }, (_, i) => '<input class="kt" inputmode="decimal" style="width:72px; text-align:right;' + (ulang[b.kode] ? ' border-color:var(--merah);' : '') + '" value="' + esc(x.kotak[i] === undefined ? '' : x.kotak[i]) + '" aria-label="' + esc(b.nama) + ' kotak ' + (i + 1) + '">').join('') +
+        '</div></td><td class="r" style="width:80px;"><b class="jml">' + angka(jumlahKotak(x.kotak)) + '</b></td></tr>';
+    }).join('') + '</table><div class="err" id="stkErr"></div>',
+    [{ t: 'Batal', c: 'ghost', f: tutupModal }, { t: 'Simpan draft', c: 'hijau', f: async () => {
+      const lama = draftStok().item, baru = {}, w = waktu();
+      document.querySelectorAll('#mIsi tr[data-k]').forEach(tr => {
+        const k = tr.dataset.k, kotak = Array.from(tr.querySelectorAll('.kt')).map(i => i.value.trim().replace(',', '.'));
+        const ada = kotak.some(v => v !== '');
+        if (!ada) return;
+        const sama = lama[k] && JSON.stringify(lama[k].kotak) === JSON.stringify(kotak);
+        baru[k] = { kotak: kotak, waktu: sama && !ulang[k] ? lama[k].waktu : w };
+      });
+      S.stokDraft = { idShift: S.shift.id, item: baru };
+      await simpanKe('stokDraft');
+      const s2 = statusStok();
+      tutupModal();
+      tumpuk(s2.lengkap ? '✓ Hitung stok harian lengkap. Bisa tutup kasir.' : 'Draft tersimpan. Belum dihitung: ' + s2.kurang.join(', '), 4000);
+    } }]);
+  document.querySelectorAll('#mIsi .kt').forEach(i => i.addEventListener('input', () => {
+    i.value = i.value.replace(/[^\d.,]/g, ''); i.style.borderColor = '';
+    const tr = i.closest('tr'); tr.querySelector('.jml').textContent = angka(jumlahKotak(Array.from(tr.querySelectorAll('.kt')).map(x => x.value.replace(',', '.'))));
+  }));
+}
+function jumlahKotak(k) { return (k || []).reduce((a, v) => a + (Number(String(v).replace(',', '.')) || 0), 0); }
+
 async function dialogTutup() {
   if (!S.shift) { tumpuk('Kasir belum dibuka.'); return; }
-  if (S.kr.item.length || S.simpanan.length) {
-    modal('Belum bisa tutup kasir', '<div style="white-space:pre-line;">Masih ada transaksi yang belum selesai:\n' +
-      (S.kr.item.length ? '• Keranjang yang sedang diisi (' + S.kr.item.reduce((a, x) => a + x.jumlah, 0) + ' item)\n' : '') +
-      (S.simpanan.length ? '• ' + S.simpanan.length + ' keranjang tersimpan: ' + esc(S.simpanan.map(x => x.label).join(', ')) + '\n' : '') +
-      '\nSelesaikan pembayarannya, atau hapus kalau batal, lalu tutup kasir lagi.</div>',
-      [{ t: 'Tutup', c: 'ghost', f: tutupModal }].concat(S.simpanan.length ? [{ t: 'Buka keranjang tersimpan', f: () => { tutupModal(); dialogSimpanan(); } }] : []));
+  if (S.kasir.id !== S.shift.segmen.idKasir) { tumpuk('Hanya kasir aktif yang bisa tutup kasir.'); return; }
+  if (cekBelumSelesai('Belum bisa tutup kasir')) return;
+  const st = statusStok();
+  if (daftarHitung().length && !st.lengkap) {
+    modal('Belum bisa tutup kasir', '<div style="white-space:pre-line;">Hitung Stok Harian belum lengkap.\n' +
+      (st.kurang.length ? '• Belum dihitung: ' + esc(st.kurang.join(', ')) + '\n' : '') +
+      (st.ulang.length ? '• Hitung ulang (terjual/dibeli setelah dihitung): ' + esc(st.ulang.map(x => x.nama + ' ' + angka(x.n)).join(', ')) + '\n' : '') + '</div>',
+      [{ t: 'Tutup', c: 'ghost', f: tutupModal }, { t: 'Buka Hitung Stok Harian', f: () => { tutupModal(); dialogStokHarian(); } }]);
     return;
   }
-  const r = rekapShift();
-  modal('Rekap kas & tutup kasir', '<table class="tbl"><tr><td>Dibuka</td><td class="r">' + esc(S.shift.buka.slice(0, 16)) + ' (' + esc(S.shift.namaKasir) + ')</td></tr>' +
-    '<tr><td>Modal awal</td><td class="r">' + rp(S.shift.modal) + '</td></tr>' +
-    Object.keys(r.per).map(k => '<tr><td>Penjualan ' + esc(namaMetode(k)) + '</td><td class="r">' + rp(r.per[k]) + '</td></tr>').join('') +
-    '<tr><td>Kas keluar</td><td class="r">− ' + rp(r.kas) + '</td></tr>' +
-    '<tr><td><b>Uang tunai seharusnya di laci</b><div class="hint">modal + penjualan tunai − kas keluar</div></td><td class="r"><b>' + rp(r.seharusnya) + '</b></td></tr></table>' +
-    '<div class="hint" style="margin-top:6px;">' + r.trx.length + ' transaksi. Non-tunai ' + rp(r.nonTunai) + ' tidak masuk laci.' +
-      (r.batal.length ? ' <b style="color:var(--merah);">' + r.batal.length + ' transaksi dibatalkan admin (' + rp(r.batal.reduce((a, t) => a + t.total, 0)) + ') tidak dihitung.</b>' : '') + '</div>' +
+  const r = rekapShift(S.shift.segmen.no), rAll = rekapShift(null);
+  modal('Rekap kas & tutup kasir', '<div>Kasir: <b>' + esc(S.kasir.nama) + '</b> sejak ' + esc(S.shift.segmen.mulai.slice(11, 16)) + '</div>' +
+    htmlRekapSeg(r, S.shift.segmen.no === 1 ? 'Modal awal' : 'Uang awal (dari serah terima)') +
+    (S.shift.segmen.no > 1 ? '<div class="hint">Seluruh hari: ' + rAll.trx.length + ' transaksi, tunai ' + rp(rAll.tunai) + ', non-tunai ' + rp(rAll.nonTunai) + '.</div>' : '') +
+    (daftarHitung().length ? '<div class="hint" style="color:var(--hijau); margin-top:6px;">✓ Hitung stok harian lengkap (' + daftarHitung().length + ' barang)</div>' : '') +
     '<label class="lbl" for="inSetor">Uang tunai dihitung (setoran)</label><input id="inSetor" inputmode="numeric" class="angkaBesar">' +
     '<div class="angkaBesar" id="selisih" style="font-size:18px; margin-top:8px;"></div>' +
-    htmlHitungStok() +
     '<label class="lbl" for="inCatTutup">Catatan (opsional)</label><input id="inCatTutup" maxlength="200"><div class="err" id="ttpErr"></div>',
     [{ t: 'Batal', c: 'ghost', f: tutupModal }, { t: 'Tutup kasir', c: 'merah', id: 'btnTutupKasir', f: async () => {
       if ($('inSetor').value === '') { $('ttpErr').textContent = 'Isi uang tunai yang dihitung.'; return; }
-      const stok = bacaHitungStok();
-      if (stok === null) { $('ttpErr').textContent = 'Isi stok fisik SEMUA barang (isi 0 kalau habis).'; return; }
       sibuk(true, 'Mengirim data & menutup kasir...');
       await sinkron(true);
       if (belumTerkirim()) { sibuk(false);
         $('ttpErr').textContent = 'Masih ada ' + belumTerkirim() + ' data belum terkirim (' + (S.gagalSync || 'cek internet') + '). Tutup kasir harus menunggu semua terkirim supaya rekap di Hub cocok.'; return; }
-      const r2 = rekapShift(), setor = nilaiRupiah($('inSetor'));
-      S.antrian.shift.push({ id: S.shift.id, idKasir: S.shift.idKasir, buka: S.shift.buka, modal: S.shift.modal, tutup: waktu(), tunai: r2.tunai, nonTunai: r2.nonTunai,
-        kasKeluar: r2.kas, setoran: setor, jumlahTrx: r2.trx.length, stok: stok, catatan: $('inCatTutup').value.trim() + (S.kasir.id !== S.shift.idKasir ? ' [ditutup ' + S.kasir.nama + ']' : '') });
+      const st2 = statusStok();
+      if (daftarHitung().length && !st2.lengkap) { sibuk(false); $('ttpErr').textContent = 'Ada barang terjual setelah dihitung / dibatalkan admin. Buka Hitung Stok Harian lagi.'; return; }
+      const r2 = rekapShift(S.shift.segmen.no), all = rekapShift(null), setor = nilaiRupiah($('inSetor'));
+      const d = draftStok();
+      const stok = daftarHitung().map(b => { const x = d.item[b.kode]; return { kode: b.kode, fisik: jumlahKotak(x.kotak), kotak: x.kotak, waktu: x.waktu }; });
+      S.antrian.serahTerima.push(itemSerah(r2, setor, 'TUTUP', null));
+      S.antrian.shift.push({ id: S.shift.id, idKasir: S.shift.idKasir, idKasirTutup: S.kasir.id, namaKasirTutup: S.kasir.nama, buka: S.shift.buka, modal: S.shift.modal,
+        tutup: waktu(), tunai: all.tunai, nonTunai: all.nonTunai, kasKeluar: all.kas, setoran: setor, jumlahTrx: all.trx.length, stok: stok, catatan: $('inCatTutup').value.trim() });
       await simpanKe('antrian');
       await sinkron(true);
       const sel = setor - r2.seharusnya;
-      S.shift = null; await simpanKe('shift');
+      S.shift = null; S.stokDraft = null; await Promise.all([simpanKe('shift'), simpanKe('stokDraft')]);
       sibuk(false); tutupModal();
       modal('Kasir ditutup', '<div class="angkaBesar">' + (sel === 0 ? '✓ Setoran pas' : (sel > 0 ? 'Lebih ' : 'Kurang ') + rp(Math.abs(sel))) + '</div>' +
         '<div class="hint" style="text-align:center; margin-top:8px;">Setoran ' + rp(setor) + ', seharusnya ' + rp(r2.seharusnya) + '.' + (S.antrian.shift.length ? ' Rekap terkirim saat ada internet.' : ' Rekap sudah terkirim ke Hub.') + '</div>',
         [{ t: 'Selesai', f: () => { tutupModal(); bukaPin('Kasir sudah ditutup.'); } }], () => bukaPin('Kasir sudah ditutup.'));
     } }]);
-  pasangRupiah($('inSetor'));
-  document.querySelectorAll('.inFisik').forEach(x => x.addEventListener('input', () => { x.value = x.value.replace(/[^\d.,]/g, ''); x.style.borderColor = ''; }));
-  $('inSetor').addEventListener('input', () => {
-    const v = nilaiRupiah($('inSetor')), s = v - r.seharusnya, el = $('selisih');
-    el.textContent = $('inSetor').value === '' ? '' : s === 0 ? '✓ Pas' : (s > 0 ? 'Lebih ' : 'Kurang ') + rp(Math.abs(s));
-    el.style.color = s === 0 ? 'var(--hijau)' : 'var(--merah)';
-  });
-}
-// ---------- hitung stok fisik saat tutup kasir (barang dipilih admin di Hub) ----------
-function htmlHitungStok() {
-  const l = M().hitungTutup || [];
-  if (!l.length) return '';
-  return '<div style="margin-top:16px; font-weight:700;">Hitung stok fisik</div><div class="hint">Hitung sisa barang di cabang, isi semua (0 kalau habis). Stok sistem disesuaikan ke angka ini.</div>' +
-    '<table class="tbl" style="margin-top:6px;">' + l.map(b => '<tr><td>' + esc(b.nama) + '<div class="hint">' + esc(b.satuan) + '</div></td>' +
-      '<td style="width:120px;"><input class="inFisik" data-k="' + esc(b.kode) + '" inputmode="decimal" placeholder="0" style="text-align:right;"></td></tr>').join('') + '</table>';
-}
-function bacaHitungStok() {   // null = ada yang belum diisi
-  const out = []; let kosong = false;
-  document.querySelectorAll('.inFisik').forEach(x => {
-    const v = x.value.trim().replace(',', '.');
-    if (v === '' || !(Number(v) >= 0)) { kosong = true; x.style.borderColor = 'var(--merah)'; return; }
-    out.push({ kode: x.dataset.k, fisik: Number(v) });
-  });
-  return kosong ? null : out;
+  pasangSelisih($('inSetor'), $('selisih'), r.seharusnya);
 }
 // ---------- atur tampilan (per cabang, disimpan ke server) ----------
 function dialogTampilan() {
@@ -1193,7 +1333,7 @@ function dialogTampilan() {
 }
 // ---------- keluar perangkat ----------
 function keluarPerangkat() {
-  const n = belumTerkirim() + S.antrian.shift.length;
+  const n = belumTerkirim() + S.antrian.shift.length;   // serah terima sudah ikut belumTerkirim
   if (n) { tumpuk('Masih ada ' + n + ' data belum terkirim. Sync dulu sebelum keluar.', 4000); return; }
   if (S.shift) { tumpuk('Kasir masih terbuka. Tutup kasir dulu.', 4000); return; }
   tanya('Keluar perangkat?', 'Tablet ini harus login lagi dengan akun cabang untuk dipakai.', async () => {
