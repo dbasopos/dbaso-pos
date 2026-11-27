@@ -40,7 +40,7 @@
   .pad { display:grid; grid-template-columns:repeat(3, 76px); gap:12px; }
   .pad button { height:76px; border-radius:50%; font-size:26px; background:var(--navy2); }
   .pad button.kosong { visibility:hidden; }
-  #pinPesan { min-height:20px; color:#fecaca; font-size:14px; text-align:center; }
+  #pinPesan { min-height:20px; color:#fecaca; font-size:14px; text-align:center; white-space:pre-line; max-width:440px; }
   #lyPin .bawah { display:flex; gap:10px; margin-top:10px; flex-wrap:wrap; justify-content:center; }
   #lyPin .bawah button { background:transparent; border:1px solid rgba(255,255,255,.35); font-weight:500; }
 
@@ -251,7 +251,7 @@
 
 <script>
 'use strict';
-const VERSI_APP = '1.2 (26 Nov 2026)';
+const VERSI_APP = '1.3 (27 Nov 2026)';
 // =====================================================================
 // PENYIMPANAN DI TABLET (IndexedDB, kunci -> nilai)
 // =====================================================================
@@ -459,14 +459,17 @@ async function tekanPin(k) {
   }
   S.pinSalah = 0;
   if (S.shift && S.shift.segmen && S.shift.segmen.idKasir !== cocok.id) {
-    $('pinPesan').textContent = 'Kasir aktif masih ' + S.shift.segmen.nama + '. ' + S.shift.segmen.nama + ' harus masuk lalu Serah Terima Kasir ke ' + cocok.nama + '.';
+    const iz = M().ambilAlih;
+    if (iz && iz.idKasir === cocok.id) { dialogAmbilAlih(cocok, iz); return; }
+    $('pinPesan').textContent = 'Kasir aktif masih ' + S.shift.segmen.nama + '. ' + S.shift.segmen.nama + ' harus masuk lalu Serah Terima Kasir ke ' + cocok.nama + '.\n' +
+      'Kalau ' + S.shift.segmen.nama + ' tidak ada: minta admin utama memberi izin "Ambil alih kasir" di Hub, lalu tekan Sync data kasir.';
     return;
   }
   S.kasir = { id: cocok.id, nama: cocok.nama }; S.terakhirSentuh = Date.now();
   masukUtama();
 }
 document.addEventListener('keydown', e => { if (sedangDi('lyPin') && /^[0-9]$/.test(e.key)) tekanPin(e.key); else if (sedangDi('lyPin') && e.key === 'Backspace') tekanPin('⌫'); });
-$('pinSync').onclick = async () => { $('pinPesan').textContent = 'Sync...'; await sinkron(true); bukaPin(S.gagalSync ? 'Sync gagal: ' + S.gagalSync : 'Data kasir diperbarui.'); };
+$('pinSync').onclick = async () => { $('pinPesan').textContent = 'Sync...'; await sinkron(true); if (!S.sesi || !S.sesi.token) return; bukaPin(S.gagalSync ? 'Sync gagal: ' + S.gagalSync : 'Data kasir diperbarui.'); };
 $('pinKeluar').onclick = () => keluarPerangkat();
 
 // kunci otomatis
@@ -1163,6 +1166,36 @@ function dialogSerah() {
     setTimeout(() => p.focus(), 50);
   };
   langkah1();
+}
+
+// ---------- AMBIL ALIH KASIR (izin admin utama dari Hub; kasir aktif pergi tanpa serah terima) ----------
+function dialogAmbilAlih(baru, iz) {
+  const lama = S.shift.segmen, r = rekapShift(lama.no);
+  modal('Ambil alih kasir dari ' + lama.nama, '<div class="hint" style="margin-bottom:8px;">Diizinkan admin ' + esc(iz.oleh) + ': ' + esc(iz.alasan) + '</div>' +
+    '<div><b>' + esc(baru.nama) + '</b> mengambil alih kasir <b>' + esc(lama.nama) + '</b> (sejak ' + esc(lama.mulai.slice(11, 16)) + ').</div>' +
+    htmlRekapSeg(r, lama.no === 1 ? 'Modal awal' : 'Uang awal (dari serah terima)') +
+    '<label class="lbl" for="inAA">Hitung uang tunai di laci sekarang</label><input id="inAA" inputmode="numeric" class="angkaBesar">' +
+    '<div class="angkaBesar" id="aaSel" style="font-size:18px; margin-top:8px;"></div>' +
+    '<div class="hint">Selisih dicatat atas nama ' + esc(lama.nama) + '. Uang yang dihitung jadi uang awal ' + esc(baru.nama) + '.</div><div class="err" id="aaErr"></div>',
+    [{ t: 'Batal', c: 'ghost', f: tutupModal }, { t: 'Ambil alih', c: 'hijau', id: 'btnAA', f: async () => {
+      if ($('inAA').value === '') { $('aaErr').textContent = 'Isi uang yang dihitung.'; return; }
+      const dihitung = nilaiRupiah($('inAA'));
+      sibuk(true, 'Menyimpan...');
+      const it = itemSerah(rekapShift(lama.no), dihitung, 'AMBIL_ALIH', baru);
+      it.idIzin = iz.id;
+      S.antrian.serahTerima.push(it);
+      S.shift.segmen = { no: lama.no + 1, idKasir: baru.id, nama: baru.nama, mulai: it.selesai, uangAwal: dihitung };
+      S.master.ambilAlih = null;
+      await Promise.all([simpanKe('antrian'), simpanKe('shift'), simpanKe('master')]);
+      sibuk(false); mOnTutup = null; $('modal').classList.remove('on');
+      S.kasir = { id: baru.id, nama: baru.nama }; S.terakhirSentuh = Date.now();
+      const sel = dihitung - it.uangAwal - it.tunai + it.kasKeluar;
+      masukUtama();
+      tumpuk('Kasir diambil alih. ' + lama.nama + ': ' + (sel === 0 ? 'pas' : (sel > 0 ? 'lebih ' : 'kurang ') + rp(Math.abs(sel))) + '. Selamat bertugas, ' + baru.nama + '.', 6000);
+      sinkron();
+    } }]);
+  pasangSelisih($('inAA'), $('aaSel'), r.seharusnya);
+  setTimeout(() => $('inAA').focus(), 50);
 }
 
 // ---------- HITUNG STOK HARIAN (draft, wajib sebelum tutup kasir) ----------
