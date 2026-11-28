@@ -1,6 +1,6 @@
 // Service worker DBASO Kasir: aplikasi tetap terbuka tanpa internet.
 // Ganti VERSI setiap kali file aplikasi diperbarui supaya tablet mengambil versi baru.
-const VERSI = 'dbaso-kasir-v7';
+const VERSI = 'dbaso-kasir-v8';
 const FILE = ['./', './index.html', './config.js', './manifest.webmanifest', './icon-192.png', './icon-512.png'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(VERSI).then(c => c.addAll(FILE)).then(() => self.skipWaiting())); });
 self.addEventListener('activate', e => {

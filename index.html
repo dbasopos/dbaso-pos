@@ -54,6 +54,8 @@
   #stSync.belum { background:#fde68a; color:#78350f; }
   #stSync.gagal { background:#fecaca; color:#7f1d1d; }
   .bar .isi { flex:1; }
+  #btnPrinter { font-size:18px; border:1px solid rgba(255,255,255,.3); padding:6px 10px; }
+  #btnPrinter.putus { background:#fecaca; color:#7f1d1d; } #btnPrinter.ok { background:rgba(22,163,74,.35); }
   #btnSimpanan { font-size:13.5px; font-weight:600; border:1px solid rgba(255,255,255,.3); white-space:nowrap; display:flex; align-items:center; gap:2px; }
   .badge { display:inline-block; min-width:20px; padding:0 6px; border-radius:999px; background:var(--oranye); color:#fff; font-size:12px; line-height:20px; text-align:center; margin-left:4px; }
 
@@ -192,6 +194,7 @@
     <span class="namaCab" id="barCab"></span>
     <button id="stSync" title="Tekan untuk sync"></button>
     <span class="isi"></span>
+    <button id="btnPrinter" title="Printer">🖨</button>
     <button id="btnSimpanan"><span class="tks">Keranjang Tersimpan</span><span class="tksHp">🗂</span><span class="badge" id="bdSimpanan">0</span></button>
     <button class="ikon" id="btnTitik" aria-label="Lainnya">⋮</button>
   </div>
@@ -237,7 +240,7 @@
     <button class="itm" data-m="kas">💸 Kas Keluar<small>Beli barang di cabang / biaya lain</small></button>
     <button class="itm" data-m="tutup">🔒 Rekap Kas &amp; Tutup Kasir</button>
     <button class="itm" data-m="tampilan">🎨 Atur Tampilan<small>Urutan kategori, urutan produk, sembunyikan produk</small></button>
-    <button class="itm" data-m="printer" disabled>🖨 Pengaturan Printer<small>Menyusul (tahap 4)</small></button>
+    <button class="itm" data-m="printer">🖨 Pengaturan Printer<small>Struk pembeli & tiket dapur (Bluetooth)</small></button>
     <button class="itm" data-m="stok">📦 Hitung Stok Harian<small>Wajib sebelum tutup kasir</small></button>
     <button class="itm" data-m="serah">🤝 Serah Terima Kasir<small>Ganti orang: hitung uang laci</small></button>
     <button class="itm" data-m="keluar" style="color:var(--merah);">⏏ Keluar Perangkat</button>
@@ -251,7 +254,7 @@
 
 <script>
 'use strict';
-const VERSI_APP = '1.3 (27 Nov 2026)';
+const VERSI_APP = '1.4 (28 Nov 2026)';
 // =====================================================================
 // PENYIMPANAN DI TABLET (IndexedDB, kunci -> nilai)
 // =====================================================================
@@ -278,7 +281,8 @@ const S = {
   kasir: null,       // { id, nama } yang sedang aktif (tidak disimpan: setiap buka aplikasi minta PIN)
   shift: null,       // { id, idKasir, namaKasir, buka, modal }
   antrian: { transaksi: [], kasKeluar: [], shift: [], serahTerima: [] },
-  stokDraft: null,   // { idShift, item: { kode: { kotak: [..], waktu } } } hitung stok harian (draft)
+  stokDraft: null,
+  printer: [],       // printer Bluetooth perangkat ini: [{ id, nama, devId, lebar, nota, salinan, tiket, judul, kategori: ['*'] | [kode] }]   // { idShift, item: { kode: { kotak: [..], waktu } } } hitung stok harian (draft)
   riwayat: [],       // transaksi perangkat ini (terbaru dulu, maks 600)
   kasLokal: [],      // kas keluar perangkat ini (maks 300)
   simpanan: [],      // keranjang tersimpan
@@ -291,7 +295,7 @@ const S = {
 };
 const simpanKe = (k) => DB.set(k, S[k]);
 async function muatSemua() {
-  for (const k of ['sesi', 'master', 'syncJam', 'shift', 'antrian', 'riwayat', 'kasLokal', 'simpanan', 'seq', 'stokDraft']) {
+  for (const k of ['sesi', 'master', 'syncJam', 'shift', 'antrian', 'riwayat', 'kasLokal', 'simpanan', 'seq', 'stokDraft', 'printer']) {
     const v = await DB.get(k);
     if (v !== undefined) S[k] = v;
   }
@@ -485,6 +489,7 @@ setInterval(() => {
 // =====================================================================
 function masukUtama() {
   tampil('lyUtama');
+  autoSambungPrinter();
   if (!S.master) { tumpuk('Data produk belum ada. Tekan Sync.'); }
   gambarSemua();
   if (!S.shift) bukaShiftDialog();
@@ -555,7 +560,7 @@ function cekStokPeringatan(potongPer, jumlah) {
 // =====================================================================
 function gambarSemua() {
   $('barCab').textContent = S.sesi.cabang.nama;
-  gambarSync(); gambarKategori(); gambarGrid(); gambarKeranjang();
+  gambarSync(); gambarKategori(); gambarGrid(); gambarKeranjang(); gambarPrinter();
   $('bdSimpanan').textContent = S.simpanan.length;
 }
 function belumTerkirim() { return S.antrian.transaksi.length + S.antrian.kasKeluar.length + (S.antrian.serahTerima || []).length; }
@@ -917,6 +922,7 @@ async function selesaiTransaksi(h, metode, dibayar) {
   try { await Promise.all([simpanKe('antrian'), simpanKe('riwayat'), simpanKr()]); } finally { sibuk(false); }
   tutupKrHp(); gambarSemua();
   tampilStruk(S.riwayat[0], true);
+  cetakTransaksi(S.riwayat[0], 'semua');
   sinkron();
 }
 function htmlStruk(t) {
@@ -936,9 +942,245 @@ function pillStatus(s, pesan) { if (s === 'BATAL') return '<span class="pill tlk
 function tampilStruk(t, baru) {
   modal(baru ? 'Transaksi selesai' : 'Transaksi ' + t.no, (baru && t.metode === 'TUNAI' ? '<div class="angkaBesar" style="color:var(--hijau); margin-bottom:10px;">Kembali ' + rp(t.kembali) + '</div>' : '') +
     htmlStruk(t) + '<div style="margin-top:8px;">' + pillStatus(t.status, t.pesan) + (t.pesan ? '<div class="err">' + esc(t.pesan) + '</div>' : '') + '</div>' +
-    '<div class="hint" style="margin-top:8px;">Cetak struk menyusul (tahap 4: printer).</div>',
-    [{ t: baru ? 'Transaksi baru' : 'Tutup', c: baru ? 'hijau' : '', f: tutupModal }]);
+    '<div id="cetakInfo" class="hint" style="margin-top:8px;"></div>',
+    [{ t: '🖨 Cetak ulang', c: 'ghost', f: () => dialogCetakUlang(t) }, { t: baru ? 'Transaksi baru' : 'Tutup', c: baru ? 'hijau' : '', f: tutupModal }]);
 }
+
+// =====================================================================
+// PRINTER BLUETOOTH (ESC/POS, 58/80 mm) - struk pembeli + tiket dapur per kategori
+// Tes 28 Nov: printer RPP02N, Android 10 + Chrome 123 -> layanan 18f0 / karakteristik 2af1 (writeWithoutResponse).
+// =====================================================================
+const PRN_LAYANAN = ['000018f0-0000-1000-8000-00805f9b34fb', 'e7810a71-73ae-499d-8c15-faa9aef0c3f2', '49535343-fe7d-4ae5-8fa9-9fafd205e455',
+  '0000ff00-0000-1000-8000-00805f9b34fb', '0000ffe0-0000-1000-8000-00805f9b34fb', '0000ae30-0000-1000-8000-00805f9b34fb',
+  '0000fee7-0000-1000-8000-00805f9b34fb', '0000ff12-0000-1000-8000-00805f9b34fb', '0000ae00-0000-1000-8000-00805f9b34fb'];
+const PRN = {};   // id -> { dev, ch, nr, antre: Promise }
+function prnTersambung(p) { const x = PRN[p.id]; return !!(x && x.ch && x.dev && x.dev.gatt && x.dev.gatt.connected); }
+function gambarPrinter() {
+  const b = $('btnPrinter'); if (!b) return;
+  const n = S.printer.length, putus = S.printer.filter(p => !prnTersambung(p)).length;
+  b.className = !n ? '' : putus ? 'putus' : 'ok';
+  b.textContent = !n ? '🖨' : putus ? '🖨 ' + putus + ' putus' : '🖨 ✓';
+}
+async function prnCariJalur(dev) {
+  const gatt = await dev.gatt.connect();
+  for (const uuid of PRN_LAYANAN) {
+    let svc; try { svc = await gatt.getPrimaryService(uuid); } catch (e) { continue; }
+    for (const ch of await svc.getCharacteristics()) if (ch.properties.write || ch.properties.writeWithoutResponse) return { ch: ch, nr: !!ch.properties.writeWithoutResponse };
+  }
+  throw new Error('Printer tidak punya jalur cetak yang dikenal.');
+}
+function prnPasangDev(p, dev) {
+  PRN[p.id] = PRN[p.id] || { antre: Promise.resolve() };
+  if (PRN[p.id].dev !== dev) dev.addEventListener('gattserverdisconnected', () => { if (PRN[p.id]) PRN[p.id].ch = null; gambarPrinter(); });
+  PRN[p.id].dev = dev;
+}
+// sambung: pakai perangkat yang sudah dikenal (tanpa memilih lagi); pilih = true -> tampilkan daftar Bluetooth (harus dari tombol)
+async function sambungPrinter(p, pilih) {
+  if (!navigator.bluetooth) throw new Error('Chrome ini tidak mendukung Bluetooth.');
+  let dev = PRN[p.id] && PRN[p.id].dev;
+  if (!dev && !pilih && navigator.bluetooth.getDevices) { try { dev = (await navigator.bluetooth.getDevices()).find(d => d.id === p.devId); } catch (e) { /* tidak didukung */ } }
+  if (!dev) {
+    if (!pilih) throw new Error('perlu dipilih ulang');
+    dev = await navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: PRN_LAYANAN });
+    p.devId = dev.id; if (!p.nama || p.nama === 'Printer') p.nama = dev.name || 'Printer'; await simpanKe('printer');
+  }
+  prnPasangDev(p, dev);
+  const j = await prnCariJalur(dev);
+  PRN[p.id].ch = j.ch; PRN[p.id].nr = j.nr;
+  gambarPrinter();
+}
+async function autoSambungPrinter() { for (const p of S.printer) if (!prnTersambung(p)) { try { await sambungPrinter(p, false); } catch (e) { /* tunggu kasir tekan 🖨 */ } } gambarPrinter(); }
+// kirim byte ke 1 printer (berurutan per printer, potongan 100 byte)
+function kirimPrinter(p, data) {
+  PRN[p.id] = PRN[p.id] || { antre: Promise.resolve() };
+  const job = PRN[p.id].antre.then(async () => {
+    if (!prnTersambung(p)) await sambungPrinter(p, false);
+    const x = PRN[p.id];
+    for (let i = 0; i < data.length; i += 100) {
+      const pot = data.slice(i, i + 100);
+      if (x.nr) await x.ch.writeValueWithoutResponse(pot); else await x.ch.writeValueWithResponse(pot);
+      await new Promise(r => setTimeout(r, 25));
+    }
+  });
+  PRN[p.id].antre = job.catch(() => {});
+  return job;
+}
+
+// ---- penyusun ESC/POS ----
+function Esc(lebar) {
+  const B = [], L = lebar || 32;
+  const asc = s => String(s == null ? '' : s).normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[×]/g, 'x').replace(/[−–—]/g, '-');
+  const teks = s => { for (const ch of asc(s)) B.push(ch.charCodeAt(0) < 128 ? ch.charCodeAt(0) : 63); };
+  const o = {
+    L: L, b: (...x) => { B.push(...x); return o; }, teks: s => { teks(s); return o; },
+    ln: s => { teks((s || '') + '\n'); return o; },
+    tengah: on => o.b(0x1b, 0x61, on ? 1 : 0), tebal: on => o.b(0x1b, 0x45, on ? 1 : 0), balik: on => o.b(0x1d, 0x42, on ? 1 : 0),
+    ukuran: (w, h) => o.b(0x1d, 0x21, ((w ? 1 : 0) << 4) | (h ? 1 : 0)),
+    garis: () => o.ln('-'.repeat(L)),
+    // pecah teks panjang jadi beberapa baris selebar n
+    pecah: (s, n) => { const out = []; let cur = ''; asc(s).split(' ').forEach(w => { while (w.length > n) { if (cur) { out.push(cur); cur = ''; } out.push(w.slice(0, n)); w = w.slice(n); } if (!cur) cur = w; else if ((cur + ' ' + w).length <= n) cur += ' ' + w; else { out.push(cur); cur = w; } }); if (cur) out.push(cur); return out.length ? out : ['']; },
+    // kiri ... kanan (harga rata kanan); kiri panjang dipecah, harga di baris terakhir
+    baris: (kiri, kanan, indent) => {
+      kanan = asc(kanan || ''); const pre = indent || '', lk = L - kanan.length - 1;
+      const l = o.pecah(kiri, lk - pre.length);
+      l.forEach((x, i) => { const z = (i ? pre : '') + x; o.ln(i === l.length - 1 ? z.padEnd(lk) + ' ' + kanan : z); });
+      return o;
+    },
+    sisip: (s, pre) => { o.pecah(s, L - pre.length).forEach(x => o.ln(pre + x)); return o; },
+    akhir: () => o.b(0x1b, 0x64, 4),   // dorong kertas 4 baris supaya tidak tersobek
+    bytes: () => new Uint8Array(B)
+  };
+  return o.b(0x1b, 0x40);
+}
+const angkaRp = n => Math.round(Number(n) || 0).toLocaleString('id-ID');
+function tglStruk(w) { return w.slice(8, 10) + '/' + w.slice(5, 7) + '/' + w.slice(0, 4) + ' ' + w.slice(11, 16); }
+function bytesNota(t, p) {
+  const e = Esc(p.lebar), st = M().struk || { kepala: ['DBASO ETAM', S.sesi.cabang.nama], kaki: ['Terima kasih'] };
+  e.tengah(1);
+  (st.kepala || []).forEach((x, i) => { if (i === 0) e.ukuran(1, 1).ln(x).ukuran(0, 0); else e.ln(x); });
+  e.tengah(0).garis().ln(t.no).ln(tglStruk(t.waktu) + '  Kasir: ' + t.namaKasir);
+  if (t.tipe !== 'TOKO') e.tebal(1).ln(namaTipe(t.tipe).toUpperCase()).tebal(0);
+  if (t.pelanggan) e.ln('Pelanggan: ' + t.pelanggan);
+  e.garis();
+  t.item.forEach(it => {
+    e.baris(it.jumlah + 'x ' + it.nama, angkaRp(it.subtotal), '   ');
+    if (it.opsi && it.opsi.length) e.sisip(ringkasOpsi(it.opsi), '   ');
+    if (it.catatan) e.sisip('* ' + it.catatan, '   ');
+  });
+  e.garis();
+  if (t.diskon && t.diskon.rp) { e.baris('Subtotal', angkaRp(t.subtotal)); e.baris('Diskon' + (t.diskon.jenis === 'PERSEN' ? ' ' + t.diskon.nilai + '%' : ''), '-' + angkaRp(t.diskon.rp)); }
+  e.tebal(1).baris('TOTAL', angkaRp(t.total)).tebal(0);
+  e.baris(namaMetode(t.metode), angkaRp(t.dibayar));
+  if (t.metode === 'TUNAI') e.baris('Kembali', angkaRp(t.kembali));
+  e.garis().tengah(1);
+  (st.kaki || []).forEach(x => e.ln(x));
+  return e.tengah(0).akhir().bytes();
+}
+function bytesTiket(t, p, items, judul) {
+  const e = Esc(p.lebar);
+  e.tengah(1).ukuran(1, 1).ln(judul || 'DAPUR').ukuran(0, 0);
+  e.tebal(1).ukuran(0, 1).ln(namaTipe(t.tipe).toUpperCase() + (t.pelanggan ? ' - ' + t.pelanggan : '')).ukuran(0, 0).tebal(0);
+  e.ln(t.no.split('-').slice(-1)[0] + '  ' + t.waktu.slice(11, 16) + '  ' + t.namaKasir).tengah(0).garis();
+  items.forEach(it => {
+    e.ukuran(0, 1).tebal(1); e.pecah(it.jumlah + 'x ' + it.nama, e.L).forEach(x => e.ln(x)); e.tebal(0).ukuran(0, 0);
+    if (it.opsi && it.opsi.length) e.sisip(ringkasOpsi(it.opsi), '   ');
+    if (it.catatan) { e.teks('   ').balik(1).teks(' ' + it.catatan + ' ').balik(0).ln(''); }
+  });
+  return e.garis().akhir().bytes();
+}
+// rencana cetak 1 transaksi: struk pembeli di printer "nota", tiket dapur per kategori.
+// Kategori yang tidak dipegang printer mana pun -> ikut tiket di printer nota pertama.
+function rencanaCetak(t, jenis) {
+  const pm = produkMap(), out = [];
+  const tiketP = S.printer.filter(p => p.tiket && (p.kategori || []).length);
+  const notaP = S.printer.filter(p => p.nota);
+  const per = {};
+  t.item.forEach(it => {
+    const kat = pm[it.kode] ? pm[it.kode].kategori : '';
+    let tuju = tiketP.filter(p => p.kategori.indexOf('*') > -1 || p.kategori.indexOf(kat) > -1);
+    if (!tuju.length && (notaP[0] || S.printer[0])) tuju = [notaP[0] || S.printer[0]];
+    tuju.forEach(p => { (per[p.id] = per[p.id] || []).push(it); });
+  });
+  S.printer.forEach(p => {
+    const bag = [];
+    if (p.nota && jenis !== 'tiket') for (let i = 0; i < (p.salinan || 1); i++) bag.push(bytesNota(t, p));
+    if (per[p.id] && jenis !== 'nota') bag.push(bytesTiket(t, p, per[p.id], p.judul));
+    if (bag.length) { const n = bag.reduce((a, x) => a + x.length, 0), all = new Uint8Array(n); let o = 0; bag.forEach(x => { all.set(x, o); o += x.length; }); out.push({ p: p, data: all }); }
+  });
+  return out;
+}
+async function cetakTransaksi(t, jenis) {
+  if (!S.printer.length) { const el = $('cetakInfo'); if (el) el.textContent = 'Belum ada printer. Atur di ☰ › Pengaturan Printer.'; return; }
+  const gagal = [];
+  for (const r of rencanaCetak(t, jenis)) { try { await kirimPrinter(r.p, r.data); } catch (e) { gagal.push(r.p.nama + ' (' + (e.message === 'perlu dipilih ulang' ? 'belum tersambung' : e.message) + ')'); } }
+  gambarPrinter();
+  const el = $('cetakInfo');
+  if (gagal.length) {
+    if (el) el.innerHTML = '<span style="color:var(--merah); font-weight:700;">⚠ Gagal cetak: ' + esc(gagal.join(', ')) + '</span><br>Tekan 🖨 di atas untuk menyambungkan, lalu Cetak ulang.';
+    tumpuk('⚠ Struk tidak tercetak: ' + gagal.join(', ') + '. Transaksi tetap tersimpan.', 5000);
+  } else if (el) el.textContent = '✓ Tercetak';
+}
+function dialogCetakUlang(t) {
+  modal('Cetak ulang ' + t.no, '<div class="pilih"><button data-j="semua">Struk + tiket dapur</button><button data-j="nota">Struk pembeli saja</button><button data-j="tiket">Tiket dapur saja</button></div><div id="cetakInfo" class="hint" style="margin-top:10px;"></div>',
+    [{ t: 'Tutup', c: 'ghost', f: tutupModal }], null, { luar: true });
+  $('mIsi').onclick = async e => { const b = e.target.closest('button[data-j]'); if (!b) return; $('cetakInfo').textContent = 'Mencetak...'; await cetakTransaksi(t, b.dataset.j); };
+}
+
+// ---- pengaturan printer (per perangkat, tersimpan di tablet) ----
+function peringatanPrinter() {
+  const w = [], milik = {};
+  S.printer.filter(p => p.tiket).forEach(p => (p.kategori || []).forEach(k => { (milik[k] = milik[k] || []).push(p.nama); }));
+  if (S.printer.length && !S.printer.some(p => p.nota)) w.push('Belum ada printer untuk struk pembeli.');
+  M().kategori.forEach(k => {
+    const n = (milik[k.kode] || []).concat(milik['*'] || []);
+    if (n.length > 1) w.push('Tiket ' + k.nama + ' tercetak di ' + n.length + ' printer (' + n.join(', ') + ').');
+    if (S.printer.length && !n.length) w.push('Tiket ' + k.nama + ' tidak dipegang printer mana pun -> ikut printer struk.');
+  });
+  return w;
+}
+function dialogPrinter() {
+  if (!navigator.bluetooth) { modal('Printer', '<div class="err">Chrome di perangkat ini tidak mendukung Bluetooth. Pakai Chrome terbaru di Android.</div>', [], null, { luar: true }); return; }
+  const w = peringatanPrinter();
+  modal('Pengaturan printer', '<div class="hint">Diatur per tablet. Printer: nyalakan Bluetooth tablet & printer. Kalau "putus", tekan Sambungkan.</div>' +
+    (S.printer.length ? S.printer.map((p, i) => '<div class="opRow" style="flex-wrap:wrap;"><span class="nm"><b>' + esc(p.nama) + '</b> ' +
+      (prnTersambung(p) ? '<span class="pill ok">tersambung</span>' : '<span class="pill tlk">putus</span>') +
+      '<br><span class="hint">' + (p.nota ? 'Struk pembeli' + (p.salinan > 1 ? ' ×' + p.salinan : '') : 'Tanpa struk') + ' · ' +
+        (p.tiket && p.kategori.length ? 'Tiket "' + esc(p.judul) + '": ' + (p.kategori.indexOf('*') > -1 ? 'semua kategori' : esc(p.kategori.map(k => (M().kategori.find(x => x.kode === k) || { nama: k }).nama).join(', '))) : 'tanpa tiket dapur') +
+        ' · ' + (p.lebar === 48 ? '80' : '58') + ' mm</span></span>' +
+      '<span class="pilih"><button data-a="sambung" data-i="' + i + '">Sambungkan</button><button data-a="tes" data-i="' + i + '">Tes</button><button data-a="atur" data-i="' + i + '">Atur</button></span></div>').join('')
+      : '<div class="kosongInfo">Belum ada printer.</div>') +
+    (w.length ? '<div class="hint" style="color:var(--kuning); margin-top:8px; white-space:pre-line;">⚠ ' + esc(w.join('\n⚠ ')) + '</div>' : '') +
+    '<div class="err" id="prnErr"></div>',
+    [{ t: 'Tutup', c: 'ghost', f: tutupModal }, { t: '+ Tambah printer', f: tambahPrinter }], null, { luar: true });
+  $('mIsi').onclick = async e => {
+    const b = e.target.closest('button[data-a]'); if (!b) return;
+    const p = S.printer[Number(b.dataset.i)];
+    if (b.dataset.a === 'atur') { dialogAturPrinter(p); return; }
+    b.disabled = true; $('prnErr').textContent = '';
+    try {
+      if (b.dataset.a === 'sambung') { try { await sambungPrinter(p, false); } catch (e1) { await sambungPrinter(p, true); } }
+      else await kirimPrinter(p, Esc(p.lebar).tengah(1).ukuran(1, 1).ln('TES PRINTER').ukuran(0, 0).ln(p.nama).ln(S.sesi.cabang.nama + ' · ' + S.sesi.kodePerangkat).ln(waktu()).tengah(0).akhir().bytes());
+      dialogPrinter();
+    } catch (er) { b.disabled = false; $('prnErr').textContent = er.message === 'perlu dipilih ulang' ? 'Tekan Sambungkan lagi lalu pilih printernya.' : er.message; }
+  };
+}
+async function tambahPrinter() {
+  const p = { id: uuid(), nama: 'Printer', devId: '', lebar: 32, nota: !S.printer.some(x => x.nota), salinan: 1, tiket: true,
+    judul: S.printer.length ? 'DAPUR ' + (S.printer.length + 1) : 'DAPUR', kategori: S.printer.length ? [] : ['*'] };
+  try { await sambungPrinter(p, true); } catch (e) { $('prnErr').textContent = e.message; return; }
+  S.printer.push(p); await simpanKe('printer');
+  dialogAturPrinter(p, true);
+}
+function dialogAturPrinter(p, baru) {
+  const kat = M().kategori;
+  modal((baru ? 'Printer baru: ' : 'Atur ') + p.nama,
+    '<label class="lbl" for="prNama">Nama printer</label><input id="prNama" maxlength="30" value="' + esc(p.nama) + '">' +
+    '<label class="lbl">Lebar kertas</label><div class="pilih"><button data-l="32" class="' + (p.lebar !== 48 ? 'on' : '') + '">58 mm</button><button data-l="48" class="' + (p.lebar === 48 ? 'on' : '') + '">80 mm</button></div>' +
+    '<label class="opRow" style="cursor:pointer;"><input type="checkbox" id="prNota" style="width:24px; min-height:24px;"' + (p.nota ? ' checked' : '') + '><span class="nm"><b>Cetak struk pembeli</b></span>' +
+      '<select id="prSalin" style="width:110px;"><option value="1">1 lembar</option><option value="2"' + (p.salinan === 2 ? ' selected' : '') + '>2 lembar</option></select></label>' +
+    '<label class="opRow" style="cursor:pointer;"><input type="checkbox" id="prTiket" style="width:24px; min-height:24px;"' + (p.tiket ? ' checked' : '') + '><span class="nm"><b>Cetak tiket dapur</b> (tanpa harga, huruf besar)</span></label>' +
+    '<label class="lbl" for="prJudul">Judul tiket</label><input id="prJudul" maxlength="16" value="' + esc(p.judul) + '">' +
+    '<label class="lbl">Kategori yang dicetak tiketnya di printer ini</label>' +
+    '<label class="opRow"><input type="checkbox" class="prKat" value="*" style="width:24px; min-height:24px;"' + (p.kategori.indexOf('*') > -1 ? ' checked' : '') + '><span class="nm">Semua kategori</span></label>' +
+    kat.map(k => '<label class="opRow"><input type="checkbox" class="prKat" value="' + esc(k.kode) + '" style="width:24px; min-height:24px;"' + (p.kategori.indexOf(k.kode) > -1 ? ' checked' : '') + '><span class="nm">' + esc(k.nama) + '</span></label>').join('') +
+    '<div class="hint">Kategori yang tidak dicentang di printer mana pun ikut tiket di printer struk.</div>',
+    [{ t: 'Hapus printer', c: 'merah', f: () => tanya('Hapus printer?', p.nama, async () => { S.printer = S.printer.filter(x => x !== p); delete PRN[p.id]; await simpanKe('printer'); gambarPrinter(); dialogPrinter(); }, 'Hapus', 'merah') },
+     { t: 'Simpan', c: 'hijau', f: async () => {
+      p.nama = $('prNama').value.trim() || p.nama; p.nota = $('prNota').checked; p.salinan = Number($('prSalin').value); p.tiket = $('prTiket').checked;
+      p.judul = $('prJudul').value.trim() || 'DAPUR';
+      const k = Array.from(document.querySelectorAll('.prKat:checked')).map(x => x.value); p.kategori = k.indexOf('*') > -1 ? ['*'] : k;
+      p.lebar = Number(document.querySelector('#mIsi button[data-l].on').dataset.l);
+      await simpanKe('printer'); dialogPrinter();
+    } }]);
+  $('mIsi').onclick = e => { const b = e.target.closest('button[data-l]'); if (!b) return; document.querySelectorAll('#mIsi button[data-l]').forEach(x => x.classList.toggle('on', x === b)); };
+}
+$('btnPrinter').onclick = async () => {
+  const putus = S.printer.filter(p => !prnTersambung(p));
+  if (!putus.length) { dialogPrinter(); return; }
+  tumpuk('Menyambungkan printer...');
+  for (const p of putus) { try { await sambungPrinter(p, false); } catch (e) { try { await sambungPrinter(p, true); } catch (e2) { tumpuk('⚠ ' + p.nama + ': ' + e2.message, 4000); } } }
+  gambarPrinter(); if (!S.printer.some(p => !prnTersambung(p))) tumpuk('✓ Printer tersambung.');
+};
 
 // =====================================================================
 // SYNC
@@ -1017,6 +1259,7 @@ function menuAksi(m) {
   else if (m === 'kas') dialogKas();
   else if (m === 'tutup') dialogTutup();
   else if (m === 'tampilan') dialogTampilan();
+  else if (m === 'printer') dialogPrinter();
   else if (m === 'serah') dialogSerah();
   else if (m === 'stok') dialogStokHarian();
   else if (m === 'keluar') keluarPerangkat();
