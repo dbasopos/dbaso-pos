@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tes Printer DBASO</title>
+<style>
+  body { font: 15px/1.4 system-ui, sans-serif; margin: 0; padding: 16px; background: #f1f5f9; color: #0f172a; }
+  .kotak { background: #fff; border-radius: 12px; padding: 16px; max-width: 520px; margin: 0 auto 12px; }
+  h1 { font-size: 19px; margin: 0 0 6px; }
+  button { width: 100%; min-height: 52px; border: 0; border-radius: 10px; font: inherit; font-weight: 700; color: #fff; background: #2563eb; margin-top: 10px; }
+  button.hijau { background: #16a34a; } button.abu { background: #475569; }
+  button:disabled { opacity: .45; }
+  #log { white-space: pre-wrap; font: 12.5px/1.4 ui-monospace, monospace; background: #0f172a; color: #e2e8f0; border-radius: 10px; padding: 12px; min-height: 120px; }
+  .hint { color: #64748b; font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="kotak">
+  <h1>Tes printer Bluetooth (DBASO Kasir)</h1>
+  <div class="hint">Buka halaman ini di <b>Chrome</b> tablet kasir. Nyalakan Bluetooth &amp; printer. Printer TIDAK perlu dipasangkan dulu di Pengaturan Android untuk cara 1.</div>
+  <button id="b1">1. Sambungkan printer (Bluetooth langsung dari Chrome)</button>
+  <button id="b2" class="hijau" disabled>2. Cetak struk contoh</button>
+  <button id="b3" class="abu">Cara cadangan: cetak lewat aplikasi RawBT</button>
+  <div class="hint" style="margin-top:8px;">Cara cadangan butuh aplikasi <b>RawBT</b> (Play Store) dan printer sudah dipasangkan di Pengaturan Bluetooth Android (PIN 0000).</div>
+</div>
+<div class="kotak"><div id="log">Siap.</div>
+  <div class="hint" style="margin-top:8px;">Kalau berhasil atau gagal, foto layar ini + hasil cetaknya, kirim ke Claude.</div></div>
+<script>
+'use strict';
+const L = t => { document.getElementById('log').textContent += '\n' + t; };
+const LAYANAN = ['000018f0-0000-1000-8000-00805f9b34fb', 'e7810a71-73ae-499d-8c15-faa9aef0c3f2', '49535343-fe7d-4ae5-8fa9-9fafd205e455',
+  '0000ff00-0000-1000-8000-00805f9b34fb', '0000ffe0-0000-1000-8000-00805f9b34fb', '0000ae30-0000-1000-8000-00805f9b34fb',
+  '0000fee7-0000-1000-8000-00805f9b34fb', '0000ff12-0000-1000-8000-00805f9b34fb', '0000ae00-0000-1000-8000-00805f9b34fb'];
+let tulis = null;
+
+// ---- struk ESC/POS 58 mm (32 huruf per baris) ----
+function struk() {
+  const E = [], teks = s => { for (const ch of String(s).normalize('NFD').replace(/[̀-ͯ]/g, '')) E.push(ch.charCodeAt(0) < 128 ? ch.charCodeAt(0) : 63); };
+  const b = (...x) => E.push(...x);
+  const baris = (kiri, kanan) => { const n = 32 - kanan.length; teks((kiri.length > n - 1 ? kiri.slice(0, n - 1) : kiri).padEnd(n) + kanan + '\n'); };
+  b(0x1b, 0x40);                                   // reset
+  b(0x1b, 0x61, 1); b(0x1d, 0x21, 0x11); teks('DBASO ETAM\n'); b(0x1d, 0x21, 0);   // tengah, huruf 2x
+  teks('Monginsidi\n'); teks('--------------------------------\n');
+  b(0x1b, 0x61, 0);
+  teks('MGS-P01-261128-0001\n28/11/2026 12:40  Kasir: Sari\n'); teks('--------------------------------\n');
+  baris('10x Siomay Kukus', '25.000'); teks('   + Bungkus\n');
+  baris('1x Paket Bakwan', '10.500'); teks('   Halus x2, Kasar\n');
+  teks('--------------------------------\n');
+  b(0x1b, 0x45, 1); baris('TOTAL', '35.500'); b(0x1b, 0x45, 0);
+  baris('Tunai', '50.000'); baris('Kembali', '14.500');
+  teks('--------------------------------\n');
+  b(0x1b, 0x61, 1); teks('Terima kasih\n');
+  b(0x1d, 0x42, 1); teks(' TIKET DAPUR: TANPA KUAH \n'); b(0x1d, 0x42, 0);   // putih di atas hitam
+  b(0x1b, 0x61, 0); teks('\n\n\n');
+  return new Uint8Array(E);
+}
+
+document.getElementById('b1').onclick = async () => {
+  if (!navigator.bluetooth) { L('X Chrome ini tidak punya Web Bluetooth. Pakai Chrome terbaru di Android, atau cara cadangan RawBT.'); return; }
+  try {
+    L('Memilih printer... (pilih RPP02N)');
+    const dev = await navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: LAYANAN });
+    L('Dipilih: ' + (dev.name || '(tanpa nama)'));
+    const gatt = await dev.gatt.connect();
+    L('Tersambung. Mencari jalur tulis...');
+    for (const uuid of LAYANAN) {
+      let svc; try { svc = await gatt.getPrimaryService(uuid); } catch (e) { continue; }
+      for (const ch of await svc.getCharacteristics()) {
+        const p = ch.properties;
+        L('  layanan ' + uuid.slice(4, 8) + ' / ' + ch.uuid.slice(4, 8) + (p.write ? ' write' : '') + (p.writeWithoutResponse ? ' writeNR' : ''));
+        if (!tulis && (p.write || p.writeWithoutResponse)) tulis = { ch, nr: p.writeWithoutResponse, svc: uuid };
+      }
+    }
+    if (!tulis) { L('X Tidak ada jalur tulis yang dikenal. Kirim foto layar ini ke Claude.'); return; }
+    L('OK jalur tulis: layanan ' + tulis.svc + ', karakteristik ' + tulis.ch.uuid);
+    document.getElementById('b2').disabled = false;
+  } catch (e) { L('X ' + e.message); }
+};
+
+document.getElementById('b2').onclick = async () => {
+  const data = struk(), t0 = Date.now();
+  try {
+    for (let i = 0; i < data.length; i += 100) {
+      const pot = data.slice(i, i + 100);
+      if (tulis.nr) await tulis.ch.writeValueWithoutResponse(pot); else await tulis.ch.writeValueWithResponse(pot);
+      await new Promise(r => setTimeout(r, 20));
+    }
+    L('OK terkirim ' + data.length + ' byte dalam ' + (Date.now() - t0) + ' ms. Cek hasil cetak.');
+  } catch (e) { L('X gagal kirim: ' + e.message); }
+};
+
+document.getElementById('b3').onclick = () => {
+  const d = struk(); let s = ''; d.forEach(x => { s += String.fromCharCode(x); });
+  location.href = 'intent:base64,' + btoa(s) + '#Intent;scheme=rawbt;package=ru.a402d.rawbtprinter;end;';
+  L('Membuka RawBT... (kalau tidak terbuka, aplikasi RawBT belum terpasang)');
+};
+L('Browser: ' + navigator.userAgent);
+</script>
+</body>
+</html>
