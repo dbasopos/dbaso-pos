@@ -260,7 +260,7 @@
 
 <script>
 'use strict';
-const VERSI_APP = '1.5 (28 Nov 2026)';
+const VERSI_APP = '1.6 (28 Nov 2026)';
 // =====================================================================
 // PENYIMPANAN DI TABLET (IndexedDB, kunci -> nilai)
 // =====================================================================
@@ -835,7 +835,7 @@ $('btnSimpan').onclick = () => {
       const label = $('inLabel').value.trim() || ('Keranjang ' + waktu().slice(11, 16));
       S.simpanan.unshift({ id: uuid(), label: label, waktu: waktu(), kasir: S.kasir.nama, kr: S.kr });
       await simpanKe('simpanan');
-      S.kr = krBaru(); simpanKr(); tutupModal(); gambarSemua(); tumpuk('Tersimpan: ' + label);
+      S.kr = krBaru(); simpanKr(); tutupModal(); gambarSemua(); tumpuk('Tersimpan: ' + label); sinkron();
     } }]);
   setTimeout(() => $('inLabel').focus(), 50);
 };
@@ -1232,7 +1232,8 @@ async function sinkron(paksa) {
       if (tolak.length) tumpuk('⚠ ' + tolak.length + ' data DITOLAK server: ' + tolak[0].pesan + '\nLapor admin. Lihat di Riwayat.', 6000);
     }
     // 2) ambil data terbaru
-    const d = await api('sync', {});
+    // laporan untuk opname di Hub: keranjang yang sedang diisi / tersimpan & data belum terkirim
+    const d = await api('sync', { keranjang: S.kr && S.kr.item.length ? 1 : 0, simpanan: S.simpanan.length, belum: belumTerkirim() + S.antrian.shift.length, versi: VERSI_APP });
     S.master = d; S.syncJam = waktu();
     const batal = {}; (d.batal || []).forEach(b => { batal[b.id] = b; });
     let baruBatal = 0;
